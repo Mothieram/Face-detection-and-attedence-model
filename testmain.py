@@ -102,9 +102,9 @@ def run_live_camera(camera_index: int = 0):
                 captured_faces = list(cached_faces)
                 break
     finally:
-        cap.release()
-        # FIX: Kill the high-frequency preview window BEFORE terminal input
-        cv2.destroyWindow(window_preview) 
+        # Kill the high-frequency preview window BEFORE terminal input.
+        # Keep cap open for active liveness challenge in register/match.
+        cv2.destroyWindow(window_preview)
 
     if captured_faces:
         # Show frozen snapshot in a NEW window
@@ -122,22 +122,37 @@ def run_live_camera(camera_index: int = 0):
             action = input("  Choose: ").strip().lower()
             if action == "r":
                 cv2.destroyAllWindows()
-                _register(captured_raw, captured_preprocessed, captured_faces, camera_index=camera_index)
+                _register(
+                    captured_raw,
+                    captured_preprocessed,
+                    captured_faces,
+                    camera_index=camera_index,
+                    cap=cap,
+                )
                 break
             elif action == "m":
                 cv2.destroyAllWindows()
-                _match(captured_raw, captured_preprocessed, captured_faces, camera_index=camera_index)
+                _match(
+                    captured_raw,
+                    captured_preprocessed,
+                    captured_faces,
+                    camera_index=camera_index,
+                    cap=cap,
+                )
                 break
             elif action == "q":
                 cv2.destroyAllWindows()
                 break
+
+    if cap is not None and cap.isOpened():
+        cap.release()
 
 
 # ═══════════════════════════════════════════════
 # REGISTER
 # ═══════════════════════════════════════════════
 
-def _register(raw: np.ndarray, preprocessed: np.ndarray, faces: list, camera_index: int = 0) -> None:
+def _register(raw: np.ndarray, preprocessed: np.ndarray, faces: list, camera_index: int = 0, cap=None) -> None:
     faces = _quality_filter(raw, faces)
     if not faces:
         print("[REGISTER] No faces passed quality check.")
@@ -154,7 +169,7 @@ def _register(raw: np.ndarray, preprocessed: np.ndarray, faces: list, camera_ind
 
     # ── Liveness check ───────────────────────────────────────────────────
     if LIVENESS_ENABLED:
-        liveness = check_liveness(raw, face, camera_index=camera_index)
+        liveness = check_liveness(raw, face, camera_index=camera_index, cap=cap)
         if not liveness["passed"]:
             print(f"[REGISTER] ✗ Liveness failed — {liveness['reason']}")
             return
@@ -180,7 +195,7 @@ def _register(raw: np.ndarray, preprocessed: np.ndarray, faces: list, camera_ind
 # MATCH
 # ═══════════════════════════════════════════════
 
-def _match(raw: np.ndarray, preprocessed: np.ndarray, faces: list, camera_index: int = 0) -> None:
+def _match(raw: np.ndarray, preprocessed: np.ndarray, faces: list, camera_index: int = 0, cap=None) -> None:
     faces = _quality_filter(raw, faces)
     if not faces:
         print("[MATCH] No faces passed quality check.")
@@ -191,7 +206,7 @@ def _match(raw: np.ndarray, preprocessed: np.ndarray, faces: list, camera_index:
     for face in faces:
         # ── Liveness check ───────────────────────────────────────────────
         if LIVENESS_ENABLED:
-            liveness = check_liveness(raw, face, camera_index=camera_index)
+            liveness = check_liveness(raw, face, camera_index=camera_index, cap=cap)
             if not liveness["passed"]:
                 print(f"  {face['face_id']} → LIVENESS FAIL | {liveness['reason']}")
                 labels[face["face_id"]] = "Spoof"
