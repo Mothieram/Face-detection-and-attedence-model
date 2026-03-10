@@ -1,0 +1,17 @@
+retinaface-pytorch
+opencv-python
+onnxruntime-gpu
+numpy
+torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+albumentations
+iglovikov-helper-functions
+pillow
+transformers==4.57.6
+huggingface_hub==0.36.2
+omegaconf
+hydra-core
+timm
+fvcore
+iopath
+yacs
+qdrant-client
