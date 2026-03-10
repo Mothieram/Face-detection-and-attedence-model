@@ -37,7 +37,6 @@ Returns:
 
 import os
 import time
-import random
 import threading
 import urllib.request
 import tempfile
@@ -62,10 +61,18 @@ _ort_session = None
 _ort_lock = threading.Lock()
 _passive_download_attempted = False
 
+# ─────────────────────────────────────────────
+# Micro-motion detection (anti replay)
+# ─────────────────────────────────────────────
+_MOTION_WINDOW = 5
+_MOTION_THRESHOLD = 2.5
+_motion_buffer = []
+_passive_frame_buffer = []
+
 
 # SilentFace model URLs
 _MODEL_URLS = [
-    "https://github.com/minivision-ai/Silent-Face-Anti-Spoofing/raw/master/resources/anti_spoof_models/2.7_80x80_MiniFASNetV2.onnx",
+    "https://github.com/minivision-ai/Silent-Face-Anti-Spoofing/master/resources/anti_spoof_models/2.7_80x80_MiniFASNetV2.onnx",
     "https://huggingface.co/spaces/aaavvvrrr/face-anti-spoofing/resolve/main/weights/modelrgb.onnx",
 ]
 
@@ -74,16 +81,18 @@ _MODEL_URLS = [
 # PUBLIC API
 # ═══════════════════════════════════════════════
 
-def check_liveness(image: np.ndarray, face: dict, cap=None) -> dict:
+def check_liveness(image: np.ndarray, face: dict, camera_index: int = 0, cap=None) -> dict:
 
     passive = _passive_check(image, face)
 
     if not passive.get("available", True):
+        _reset_liveness_buffers()
         return {"passed": False, "reason": "Passive unavailable", "method": "passive", "score": 0.0}
 
     passive_score = float(passive.get("score", 0.5))
 
     if passive_score >= LIVENESS_PASSIVE_REAL_THRESHOLD:
+        _reset_liveness_buffers()
         return {
             "passed": True,
             "reason": "Passive real",
@@ -92,6 +101,7 @@ def check_liveness(image: np.ndarray, face: dict, cap=None) -> dict:
         }
 
     if passive_score < LIVENESS_PASSIVE_SPOOF_THRESHOLD:
+        _reset_liveness_buffers()
         return {
             "passed": False,
             "reason": "Passive spoof detected",
@@ -100,6 +110,7 @@ def check_liveness(image: np.ndarray, face: dict, cap=None) -> dict:
         }
 
     if not LIVENESS_ACTIVE_ENABLED:
+        _reset_liveness_buffers()
         return {
             "passed": False,
             "reason": "Passive uncertain",
@@ -107,9 +118,21 @@ def check_liveness(image: np.ndarray, face: dict, cap=None) -> dict:
             "score": passive_score,
         }
 
+    # Keep a stable camera session: active liveness must reuse caller-provided cap.
+    # Opening a second capture can trigger camera-busy/freeze issues.
+    if cap is None or not cap.isOpened():
+        _reset_liveness_buffers()
+        return {
+            "passed": False,
+            "reason": "Active challenge camera unavailable",
+            "method": "passive+active",
+            "score": passive_score,
+        }
+
     active = _active_headpose_challenge(cap)
 
     if active["passed"]:
+        _reset_liveness_buffers()
         return {
             "passed": True,
             "reason": "Active challenge passed",
@@ -117,9 +140,10 @@ def check_liveness(image: np.ndarray, face: dict, cap=None) -> dict:
             "score": passive_score,
         }
 
+    _reset_liveness_buffers()
     return {
         "passed": False,
-        "reason": "Active challenge failed",
+        "reason": active.get("reason", "Active challenge failed"),
         "method": "passive+active",
         "score": passive_score,
     }
@@ -140,6 +164,9 @@ def _passive_check(image: np.ndarray, face: dict):
 
     if crop is None:
         return {"score": 0.5}
+
+    if not _check_micro_motion(crop):
+        return {"score": 0.0}
 
     blob = _preprocess(crop)
 
@@ -225,13 +252,57 @@ def _active_headpose_challenge(cap):
         print("[LIVENESS] Camera unavailable")
         return {"passed": False}
 
-    challenge = random.choice(["left", "right"])
-
-    print(f"[LIVENESS] Please look {challenge.upper()}")
-
-    deadline = time.time() + LIVENESS_HEADPOSE_TIMEOUT
-
     from modules.detector import detect_faces
+
+    # Phase 1: neutral yaw calibration
+    print("[LIVENESS] Look straight for calibration...")
+    calib_target = 12
+    neutral_samples = []
+    calib_deadline = time.time() + 5.0
+    while len(neutral_samples) < calib_target and time.time() < calib_deadline:
+        ok, frame = cap.read()
+        if not ok:
+            continue
+
+        faces = detect_faces(frame)
+        if faces:
+            face = max(faces, key=lambda f: f["score"])
+            neutral_samples.append(_estimate_yaw(face["landmarks"]))
+
+        cv2.putText(
+            frame,
+            f"LOOK STRAIGHT ({len(neutral_samples)}/{calib_target})",
+            (20, 40),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.9,
+            (0, 255, 255),
+            2,
+        )
+        _draw_progress_bar(
+            frame,
+            current=len(neutral_samples),
+            total=calib_target,
+            x=20,
+            y=56,
+            width=320,
+            height=18,
+            label="Calibrating",
+        )
+        cv2.imshow("Liveness Challenge", frame)
+        if cv2.waitKey(1) & 0xFF == ord("q"):
+            cv2.destroyWindow("Liveness Challenge")
+            return {"passed": False}
+
+    if len(neutral_samples) < 6:
+        print("[LIVENESS] Calibration failed")
+        cv2.destroyWindow("Liveness Challenge")
+        return {"passed": False}
+
+    neutral_yaw = float(np.median(neutral_samples))
+
+    # Phase 2: directional challenge (user may turn either side)
+    print("[LIVENESS] Please turn LEFT or RIGHT")
+    deadline = time.time() + LIVENESS_HEADPOSE_TIMEOUT
 
     passed = False
 
@@ -248,26 +319,21 @@ def _active_headpose_challenge(cap):
 
             face = max(faces, key=lambda f: f["score"])
 
-            yaw = _estimate_yaw(face["landmarks"])
+            yaw = _estimate_yaw(face["landmarks"]) - neutral_yaw
 
-            if challenge == "left" and yaw < -LIVENESS_HEADPOSE_YAW_THRESHOLD:
-                passed = True
-                break
-
-            if challenge == "right" and yaw > LIVENESS_HEADPOSE_YAW_THRESHOLD:
+            if abs(yaw) > LIVENESS_HEADPOSE_YAW_THRESHOLD:
                 passed = True
                 break
 
         cv2.putText(
             frame,
-            f"LOOK {challenge.upper()}",
+            "TURN LEFT OR RIGHT",
             (20, 40),
             cv2.FONT_HERSHEY_SIMPLEX,
             1.2,
             (0, 255, 255),
             3,
         )
-
         cv2.imshow("Liveness Challenge", frame)
 
         if cv2.waitKey(1) & 0xFF == ord("q"):
@@ -275,7 +341,10 @@ def _active_headpose_challenge(cap):
 
     cv2.destroyWindow("Liveness Challenge")
 
-    return {"passed": passed}
+    if not passed:
+        return {"passed": False, "reason": "Head pose challenge failed"}
+
+    return {"passed": True}
 
 
 # ═══════════════════════════════════════════════
@@ -303,6 +372,69 @@ def _estimate_yaw(landmarks):
 # ═══════════════════════════════════════════════
 # UTILITIES
 # ═══════════════════════════════════════════════
+
+def _draw_progress_bar(
+    frame: np.ndarray,
+    current: int,
+    total: int,
+    x: int,
+    y: int,
+    width: int,
+    height: int,
+    label: str = "",
+):
+
+    total = max(1, int(total))
+    progress = min(1.0, max(0.0, float(current) / float(total)))
+    fill_w = int(width * progress)
+
+    cv2.rectangle(frame, (x, y), (x + width, y + height), (180, 180, 180), 2)
+    if fill_w > 0:
+        cv2.rectangle(frame, (x, y), (x + fill_w, y + height), (0, 200, 80), -1)
+
+    if label:
+        cv2.putText(
+            frame,
+            f"{label}: {int(progress * 100)}%",
+            (x, y + height + 22),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (0, 255, 255),
+            2,
+        )
+
+
+def _reset_liveness_buffers():
+
+    _motion_buffer.clear()
+    _passive_frame_buffer.clear()
+
+
+def _check_micro_motion(crop: np.ndarray) -> bool:
+    """
+    Detect small motion between face crops.
+    Helps block phone/video replay attacks.
+    """
+    global _motion_buffer
+
+    gray = cv2.cvtColor(crop, cv2.COLOR_BGR2GRAY)
+
+    _motion_buffer.append(gray)
+
+    if len(_motion_buffer) < _MOTION_WINDOW:
+        return True
+
+    if len(_motion_buffer) > _MOTION_WINDOW:
+        _motion_buffer.pop(0)
+
+    diffs = []
+    for i in range(len(_motion_buffer) - 1):
+        diff = cv2.absdiff(_motion_buffer[i], _motion_buffer[i + 1])
+        diffs.append(np.mean(diff))
+
+    avg_motion = float(np.mean(diffs))
+
+    return avg_motion > _MOTION_THRESHOLD
 
 def _crop_face(image, bbox, scale=2.7):
 
