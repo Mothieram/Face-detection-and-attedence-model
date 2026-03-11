@@ -75,7 +75,8 @@ _passive_frame_buffer = []
 # SilentFace model URLs
 _MODEL_URLS = [
     "https://github.com/minivision-ai/Silent-Face-Anti-Spoofing/master/resources/anti_spoof_models/2.7_80x80_MiniFASNetV2.onnx",
-    "https://huggingface.co/spaces/aaavvvrrr/face-anti-spoofing/resolve/main/weights/modelrgb.onnx",
+    "https://huggingface.co/spaces/mothieram/face-anti-spoofing/resolve/main/face-antispoofing/weights/modelrgb.onnx",
+    "https://huggingface.co/spaces/mothieram/face-anti-spoofing/resolve/main/face-antispoofing/weights/modelrgb.onnx?download=true",
 ]
 
 
