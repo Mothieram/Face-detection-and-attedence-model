@@ -15,3 +15,6 @@ fvcore
 iopath
 yacs
 qdrant-client
+fastapi
+uvicorn
+python-multipart

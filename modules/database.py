@@ -241,7 +241,34 @@ def auto_update_add_template(name: str, mode: str, embedding: list,
             
         return _save_record_locked(name, name_key, bbox, landmarks, embedding, mode, "template", False), "added"
 
-# ... [Standard CRUD and Utility helpers: delete_record, _upsert_with_retry, etc.] ...
+def record_exists(name: str) -> bool:
+    """Public API: check whether a person has at least one stored template."""
+    try:
+        _, name_key = _validate_name(name)
+    except ValueError:
+        return False
+    return _record_exists_key(name_key)
+
+
+def delete_record(name: str) -> bool:
+    """
+    Public API: delete all templates for a person.
+    Returns True when at least one point was deleted.
+    """
+    try:
+        _, name_key = _validate_name(name)
+    except ValueError:
+        return False
+
+    with _get_person_lock(name_key):
+        points = _scroll_by_name_key(name_key, limit=10_000)
+        if not points:
+            return False
+
+        ids = [p.id for p in points]
+        _delete_with_retry(_get_client(), ids)
+        _adjust_people_count(-1)
+        return True
 
 def _record_exists_key(name_key: str) -> bool:
     return len(_scroll_by_name_key(name_key, limit=1)) > 0

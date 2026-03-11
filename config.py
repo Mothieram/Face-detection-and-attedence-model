@@ -124,7 +124,7 @@ BLUR_THRESHOLD = MIN_BLUR_SCORE
 # ─────────────────────────────────────────────
 
 # Passive spoof detection (SilentFace)
-LIVENESS_PASSIVE_REAL_THRESHOLD = 0.80
+LIVENESS_PASSIVE_REAL_THRESHOLD = 0.70
 LIVENESS_PASSIVE_SPOOF_THRESHOLD = 0.40
 # For SilentFace ONNX exports with 3 classes, class index 2 is typically "real".
 LIVENESS_PASSIVE_REAL_CLASS_INDEX = 2

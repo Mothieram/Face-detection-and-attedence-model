@@ -13,7 +13,7 @@ Stage 1 — Passive Anti-Spoofing
         • masks / flat surfaces
 
 Stage 2 — Active Challenge (Head Pose)
-    Prompt user to look LEFT or RIGHT.
+    Headless yaw-motion validation from camera frames.
     Uses yaw estimation from RetinaFace landmarks.
 
 IMPORTANT
@@ -58,6 +58,8 @@ from config import (
 # ─────────────────────────────────────────────
 
 _ort_session = None
+# Backward-compat for callers that expect multi-session loading APIs.
+_ort_sessions = {}
 _ort_lock = threading.Lock()
 _passive_download_attempted = False
 
@@ -184,14 +186,19 @@ def _passive_check(image: np.ndarray, face: dict):
 def _load_ort_session():
 
     global _ort_session
+    global _ort_sessions
     global _passive_download_attempted
 
     if _ort_session is not None:
+        if "passive" not in _ort_sessions:
+            _ort_sessions["passive"] = _ort_session
         return _ort_session
 
     with _ort_lock:
 
         if _ort_session is not None:
+            if "passive" not in _ort_sessions:
+                _ort_sessions["passive"] = _ort_session
             return _ort_session
 
         model_path = os.path.expanduser(LIVENESS_PASSIVE_MODEL_PATH)
@@ -232,6 +239,7 @@ def _load_ort_session():
                 sess_options=sess_opts,
                 providers=providers,
             )
+            _ort_sessions["passive"] = _ort_session
 
             print("[LIVENESS] SilentFace loaded")
 
@@ -242,6 +250,17 @@ def _load_ort_session():
             return None
 
 
+def _load_all_sessions():
+    """
+    Compatibility API used by api.py startup.
+    Returns a dict of available liveness sessions.
+    """
+    session = _load_ort_session()
+    if session is None:
+        _ort_sessions.clear()
+    return _ort_sessions
+
+
 # ═══════════════════════════════════════════════
 # ACTIVE — HEAD POSE CHALLENGE
 # ═══════════════════════════════════════════════
@@ -250,18 +269,19 @@ def _active_headpose_challenge(cap):
 
     if cap is None or not cap.isOpened():
         print("[LIVENESS] Camera unavailable")
-        return {"passed": False}
+        return {"passed": False, "reason": "Camera unavailable"}
 
     from modules.detector import detect_faces
 
     # Phase 1: neutral yaw calibration
-    print("[LIVENESS] Look straight for calibration...")
+    print("[LIVENESS] Active challenge: calibrating neutral head pose...")
     calib_target = 12
     neutral_samples = []
     calib_deadline = time.time() + 5.0
     while len(neutral_samples) < calib_target and time.time() < calib_deadline:
         ok, frame = cap.read()
         if not ok:
+            time.sleep(0.01)
             continue
 
         faces = detect_faces(frame)
@@ -269,39 +289,14 @@ def _active_headpose_challenge(cap):
             face = max(faces, key=lambda f: f["score"])
             neutral_samples.append(_estimate_yaw(face["landmarks"]))
 
-        cv2.putText(
-            frame,
-            f"LOOK STRAIGHT ({len(neutral_samples)}/{calib_target})",
-            (20, 40),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.9,
-            (0, 255, 255),
-            2,
-        )
-        _draw_progress_bar(
-            frame,
-            current=len(neutral_samples),
-            total=calib_target,
-            x=20,
-            y=56,
-            width=320,
-            height=18,
-            label="Calibrating",
-        )
-        cv2.imshow("Liveness Challenge", frame)
-        if cv2.waitKey(1) & 0xFF == ord("q"):
-            cv2.destroyWindow("Liveness Challenge")
-            return {"passed": False}
-
     if len(neutral_samples) < 6:
         print("[LIVENESS] Calibration failed")
-        cv2.destroyWindow("Liveness Challenge")
-        return {"passed": False}
+        return {"passed": False, "reason": "Calibration failed"}
 
     neutral_yaw = float(np.median(neutral_samples))
 
     # Phase 2: directional challenge (user may turn either side)
-    print("[LIVENESS] Please turn LEFT or RIGHT")
+    print("[LIVENESS] Active challenge: waiting for LEFT/RIGHT head turn...")
     deadline = time.time() + LIVENESS_HEADPOSE_TIMEOUT
 
     passed = False
@@ -311,6 +306,7 @@ def _active_headpose_challenge(cap):
         ok, frame = cap.read()
 
         if not ok:
+            time.sleep(0.01)
             continue
 
         faces = detect_faces(frame)
@@ -324,22 +320,6 @@ def _active_headpose_challenge(cap):
             if abs(yaw) > LIVENESS_HEADPOSE_YAW_THRESHOLD:
                 passed = True
                 break
-
-        cv2.putText(
-            frame,
-            "TURN LEFT OR RIGHT",
-            (20, 40),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            1.2,
-            (0, 255, 255),
-            3,
-        )
-        cv2.imshow("Liveness Challenge", frame)
-
-        if cv2.waitKey(1) & 0xFF == ord("q"):
-            break
-
-    cv2.destroyWindow("Liveness Challenge")
 
     if not passed:
         return {"passed": False, "reason": "Head pose challenge failed"}
