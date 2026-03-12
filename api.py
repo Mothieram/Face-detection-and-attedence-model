@@ -24,6 +24,7 @@ import cv2
 import numpy as np
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Query
 from fastapi.responses import JSONResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional
 
@@ -138,6 +139,26 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Allow browser clients (including local static dev servers) to call this API.
+# If you open index.html via file://, browser origin becomes "null"; serve the
+# file over http://localhost instead for predictable CORS behavior.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "null",
+        "http://localhost",
+        "http://localhost:3000",
+        "http://localhost:5173",
+        "http://127.0.0.1",
+        "http://127.0.0.1:3000",
+        "http://127.0.0.1:5173",
+    ],
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 
 # ═══════════════════════════════════════════════
 # Pydantic response models
@@ -172,6 +193,9 @@ class MatchResult(BaseModel):
     liveness: Optional[LivenessResult] = None
     embedding_mode: str
     auto_updated: bool = False
+    bbox: Optional[list[int]] = None
+    landmarks: Optional[dict] = None
+    quality: Optional[dict] = None
 
 class MatchResponse(BaseModel):
     results: list[MatchResult]
@@ -320,7 +344,7 @@ async def detect(
 
     # Run quality check and attach result to each face dict in-place
     for face in faces:
-        face["quality"] = check_face_quality(preprocessed, face)
+        face["quality"] = check_face_quality(raw, face)
 
     return {
         "faces": [
@@ -365,7 +389,7 @@ async def register(
     if not faces:
         raise HTTPException(status_code=422, detail="No face detected in image.")
 
-    passed_faces, rejected = _quality_filter(preprocessed, faces)
+    passed_faces, rejected = _quality_filter(raw, faces)
     if not passed_faces:
         detail = "; ".join(r["reason"] for r in rejected)
         raise HTTPException(status_code=422, detail=f"All faces failed quality check: {detail}")
@@ -378,7 +402,7 @@ async def register(
     liveness_result = None
     if LIVENESS_ENABLED and not skip_liveness:
         liveness_raw = _liveness_check(
-            preprocessed, face,
+            raw, face,
             camera_index=camera_index,
             skip_active=passive_only,
         )
@@ -401,7 +425,7 @@ async def register(
                 },
             )
 
-    aligned        = align_face(preprocessed, face["landmarks"], bbox=face["bbox"])
+    aligned        = align_face(raw, face["landmarks"], bbox=face["bbox"])
     embedding, mode = generate_embedding(aligned)
 
     ok = save_record(
@@ -450,17 +474,32 @@ async def match(
     if not faces:
         return {"results": [], "total_faces": 0, "matched_count": 0}
 
-    passed_faces, _ = _quality_filter(preprocessed, faces)
+    passed_faces, _ = _quality_filter(raw, faces)
+    rejected_faces = [f for f in faces if not f.get("quality", {}).get("passed", False)]
 
     results = []
     matched_count = 0
+
+    for face in rejected_faces:
+        results.append(MatchResult(
+            face_id=face["face_id"],
+            matched=False,
+            name="Rejected",
+            score=0.0,
+            liveness=None,
+            embedding_mode="",
+            auto_updated=False,
+            bbox=face.get("bbox"),
+            landmarks=face.get("landmarks"),
+            quality=face.get("quality"),
+        ))
 
     for face in passed_faces:
         liveness_result = None
 
         if LIVENESS_ENABLED and not skip_liveness:
             liveness_raw = _liveness_check(
-                preprocessed, face,
+                raw, face,
                 camera_index=camera_index,
                 skip_active=passive_only,
             )
@@ -479,10 +518,13 @@ async def match(
                     liveness=liveness_result,
                     embedding_mode="",
                     auto_updated=False,
+                    bbox=face.get("bbox"),
+                    landmarks=face.get("landmarks"),
+                    quality=face.get("quality"),
                 ))
                 continue
 
-        aligned         = align_face(preprocessed, face["landmarks"], bbox=face["bbox"])
+        aligned         = align_face(raw, face["landmarks"], bbox=face["bbox"])
         embedding, mode = generate_embedding(aligned)
         name, score     = match_face(embedding, query_mode=mode)
         matched         = is_match(name)
@@ -502,11 +544,14 @@ async def match(
             liveness=liveness_result,
             embedding_mode=mode,
             auto_updated=updated,
+            bbox=face.get("bbox"),
+            landmarks=face.get("landmarks"),
+            quality=face.get("quality"),
         ))
 
     return {
         "results":       results,
-        "total_faces":   len(passed_faces),
+        "total_faces":   len(faces),
         "matched_count": matched_count,
     }
 
@@ -534,7 +579,7 @@ async def log_attendance(
     """
     raw = _decode_image(await image.read())
     preprocessed, faces = _run_pipeline(raw)
-    passed_faces, _ = _quality_filter(preprocessed, faces)
+    passed_faces, _ = _quality_filter(raw, faces)
 
     present, unknown, spoofed, detail = [], 0, 0, []
 
@@ -542,7 +587,7 @@ async def log_attendance(
         liveness_result = None
 
         if LIVENESS_ENABLED and not skip_liveness:
-            lv = _liveness_check(preprocessed, face,
+            lv = _liveness_check(raw, face,
                                  camera_index=camera_index, skip_active=passive_only)
             liveness_result = lv
             if not lv.get("passed", False):
@@ -554,7 +599,7 @@ async def log_attendance(
                 })
                 continue
 
-        aligned         = align_face(preprocessed, face["landmarks"], bbox=face["bbox"])
+        aligned         = align_face(raw, face["landmarks"], bbox=face["bbox"])
         embedding, mode = generate_embedding(aligned)
         name, score     = match_face(embedding, query_mode=mode)
 
@@ -610,7 +655,7 @@ async def liveness_check(
         raise HTTPException(status_code=422, detail="No face detected.")
 
     face = faces[0]  # largest / most confident
-    lv   = _liveness_check(preprocessed, face,
+    lv   = _liveness_check(raw, face,
                             camera_index=camera_index, skip_active=passive_only)
     return {
         "passed": lv.get("passed", False),

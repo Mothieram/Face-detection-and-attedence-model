@@ -112,7 +112,7 @@ LANDMARK_TEMPLATE = np.array([
 # Face quality gate
 # ─────────────────────────────────────────────
 MIN_FACE_SIZE = 40
-MIN_BLUR_SCORE = 30.0
+MIN_BLUR_SCORE = 20.0
 MAX_YAW_DEGREES = 45.0
 
 MIN_FACE_SIZE_PX = MIN_FACE_SIZE
