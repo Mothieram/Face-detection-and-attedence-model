@@ -22,7 +22,7 @@ from contextlib import asynccontextmanager
 
 import cv2
 import numpy as np
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Query
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -34,6 +34,8 @@ from config import (
     AUTO_UPDATE_MIN_CONFIDENCE,
     AUTO_UPDATE_HIGH_CONFIDENCE,
     LIVENESS_ENABLED,
+    API_AUTH_ENABLED,
+    API_KEYS,
 )
 from modules.preprocessor import preprocess_image
 from modules.detector     import detect_faces, _get_retinaface_model
@@ -51,6 +53,7 @@ from modules.database     import (
 from modules.matcher      import match_face, is_match, match_result_label
 
 logger = logging.getLogger("face_api")
+_API_KEYS_SET = set(API_KEYS)
 
 # ═══════════════════════════════════════════════
 # Startup — pre-load all models before accepting requests
@@ -138,6 +141,34 @@ app = FastAPI(
     version="1.0.0",
     lifespan=lifespan,
 )
+
+@app.middleware("http")
+async def api_key_auth_middleware(request: Request, call_next):
+    """
+    Enforce developer API key via X-API-Key header.
+    """
+    if not API_AUTH_ENABLED:
+        return await call_next(request)
+
+    # Keep docs and schema reachable; endpoint calls are still protected.
+    if request.url.path in {"/docs", "/redoc", "/openapi.json"}:
+        return await call_next(request)
+
+    key = request.headers.get("X-API-Key")
+    if not key:
+        return JSONResponse(
+            status_code=401,
+            content={"detail": "Missing API key. Send header: X-API-Key"},
+        )
+    if key not in _API_KEYS_SET:
+        return JSONResponse(
+            status_code=403,
+            content={"detail": "Invalid API key."},
+        )
+
+    # Reserved for future usage tracking/auditing.
+    request.state.api_key = key
+    return await call_next(request)
 
 # Allow browser clients (including local static dev servers) to call this API.
 # If you open index.html via file://, browser origin becomes "null"; serve the
@@ -275,17 +306,12 @@ def _quality_filter(raw: np.ndarray, faces: list) -> tuple[list, list]:
 def _liveness_check(raw: np.ndarray, face: dict,
                     camera_index: int = 0, skip_active: bool = False) -> dict:
     """Run liveness. skip_active=True forces passive-only (no camera needed)."""
-    if skip_active:
-        # Temporarily patch active flag to False for this call
-        import config as _cfg
-        orig = _cfg.LIVENESS_ACTIVE_ENABLED
-        _cfg.LIVENESS_ACTIVE_ENABLED = False
-        try:
-            result = check_liveness(raw, face, camera_index=camera_index)
-        finally:
-            _cfg.LIVENESS_ACTIVE_ENABLED = orig
-        return result
-    return check_liveness(raw, face, camera_index=camera_index)
+    return check_liveness(
+        raw,
+        face,
+        camera_index=camera_index,
+        active_enabled_override=False if skip_active else None,
+    )
 
 
 def _do_auto_update(name: str, score: float, mode: str,
@@ -383,6 +409,12 @@ async def register(
     - `passive_only=false`: may trigger active head-pose challenge using server camera.
     - `skip_liveness=true`: skips liveness entirely (use only in controlled environments).
     """
+    if record_exists(name):
+        raise HTTPException(
+            status_code=409,
+            detail=f"'{name}' is already registered. Duplicate registration is not allowed.",
+        )
+
     raw = _decode_image(await image.read())
     preprocessed, faces = _run_pipeline(raw)
 
@@ -510,10 +542,14 @@ async def match(
                 reason=liveness_raw.get("reason", ""),
             )
             if not liveness_result.passed:
+                reason_text = (liveness_result.reason or "").strip().lower()
+                # Preserve uncertainty semantics for UI/clients.
+                # Not every liveness fail is a confirmed spoof.
+                name = "Uncertain" if ("uncertain" in reason_text or "unavailable" in reason_text) else "Spoof"
                 results.append(MatchResult(
                     face_id=face["face_id"],
                     matched=False,
-                    name="Spoof",
+                    name=name,
                     score=0.0,
                     liveness=liveness_result,
                     embedding_mode="",

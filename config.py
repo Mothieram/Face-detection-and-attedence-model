@@ -2,6 +2,7 @@
 config.py — Central configuration for the face recognition pipeline.
 """
 
+import os
 import numpy as np
 
 # ─────────────────────────────────────────────
@@ -111,9 +112,9 @@ LANDMARK_TEMPLATE = np.array([
 # ─────────────────────────────────────────────
 # Face quality gate
 # ─────────────────────────────────────────────
-MIN_FACE_SIZE = 40
+MIN_FACE_SIZE = 90
 MIN_BLUR_SCORE = 20.0
-MAX_YAW_DEGREES = 45.0
+MAX_YAW_DEGREES = 50.0
 
 MIN_FACE_SIZE_PX = MIN_FACE_SIZE
 BLUR_THRESHOLD = MIN_BLUR_SCORE
@@ -163,3 +164,18 @@ PREPROCESS_ENABLE_CLAHE = True
 PREPROCESS_ENABLE_DENOISE = False
 PREPROCESS_ENABLE_GAMMA = True
 PREPROCESS_ENABLE_SHARPEN = False
+
+
+# ─────────────────────────────────────────────
+# API Authentication
+# ─────────────────────────────────────────────
+# Comma-separated keys via env, e.g.:
+#   API_KEYS=dev_key_1,dev_key_2
+API_AUTH_ENABLED = os.getenv("API_AUTH_ENABLED", "true").strip().lower() in {
+    "1", "true", "yes", "on"
+}
+API_KEYS = [
+    k.strip()
+    for k in os.getenv("API_KEYS", "developer_key").split(",")
+    if k.strip()
+]

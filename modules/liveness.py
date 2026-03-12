@@ -84,7 +84,13 @@ _MODEL_URLS = [
 # PUBLIC API
 # ═══════════════════════════════════════════════
 
-def check_liveness(image: np.ndarray, face: dict, camera_index: int = 0, cap=None) -> dict:
+def check_liveness(
+    image: np.ndarray,
+    face: dict,
+    camera_index: int = 0,
+    cap=None,
+    active_enabled_override: bool | None = None,
+) -> dict:
 
     passive = _passive_check(image, face)
 
@@ -112,7 +118,8 @@ def check_liveness(image: np.ndarray, face: dict, camera_index: int = 0, cap=Non
             "score": passive_score,
         }
 
-    if not LIVENESS_ACTIVE_ENABLED:
+    active_enabled = LIVENESS_ACTIVE_ENABLED if active_enabled_override is None else bool(active_enabled_override)
+    if not active_enabled:
         _reset_liveness_buffers()
         return {
             "passed": False,
@@ -121,8 +128,8 @@ def check_liveness(image: np.ndarray, face: dict, camera_index: int = 0, cap=Non
             "score": passive_score,
         }
 
-    # Keep a stable camera session: active liveness must reuse caller-provided cap.
-    # Opening a second capture can trigger camera-busy/freeze issues.
+    # Server should not open camera in API mode.
+    # Active challenge only runs if caller passes an already-open capture handle.
     if cap is None or not cap.isOpened():
         _reset_liveness_buffers()
         return {
