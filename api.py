@@ -22,9 +22,10 @@ from contextlib import asynccontextmanager
 
 import cv2
 import numpy as np
-from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Query, Request
+from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Query, Depends, Security
 from fastapi.responses import JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import APIKeyHeader
 from pydantic import BaseModel, Field
 from typing import Optional
 
@@ -36,6 +37,7 @@ from config import (
     LIVENESS_ENABLED,
     API_AUTH_ENABLED,
     API_KEYS,
+    GEOFENCE_ENFORCE,
 )
 from modules.preprocessor import preprocess_image
 from modules.detector     import detect_faces, _get_retinaface_model
@@ -51,9 +53,23 @@ from modules.database     import (
     load_db,
 )
 from modules.matcher      import match_face, is_match, match_result_label
+from modules.geotagging   import geotag_event
 
 logger = logging.getLogger("face_api")
 _API_KEYS_SET = set(API_KEYS)
+_api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
+
+
+async def require_api_key(api_key: Optional[str] = Security(_api_key_header)) -> None:
+    """
+    OpenAPI-visible API key auth so Swagger UI supports Authorize().
+    """
+    if not API_AUTH_ENABLED:
+        return
+    if not api_key:
+        raise HTTPException(status_code=401, detail="Missing API key. Send header: X-API-Key")
+    if api_key not in _API_KEYS_SET:
+        raise HTTPException(status_code=403, detail="Invalid API key.")
 
 # ═══════════════════════════════════════════════
 # Startup — pre-load all models before accepting requests
@@ -140,35 +156,8 @@ app = FastAPI(
     ),
     version="1.0.0",
     lifespan=lifespan,
+    dependencies=[Depends(require_api_key)],
 )
-
-@app.middleware("http")
-async def api_key_auth_middleware(request: Request, call_next):
-    """
-    Enforce developer API key via X-API-Key header.
-    """
-    if not API_AUTH_ENABLED:
-        return await call_next(request)
-
-    # Keep docs and schema reachable; endpoint calls are still protected.
-    if request.url.path in {"/docs", "/redoc", "/openapi.json"}:
-        return await call_next(request)
-
-    key = request.headers.get("X-API-Key")
-    if not key:
-        return JSONResponse(
-            status_code=401,
-            content={"detail": "Missing API key. Send header: X-API-Key"},
-        )
-    if key not in _API_KEYS_SET:
-        return JSONResponse(
-            status_code=403,
-            content={"detail": "Invalid API key."},
-        )
-
-    # Reserved for future usage tracking/auditing.
-    request.state.api_key = key
-    return await call_next(request)
 
 # Allow browser clients (including local static dev servers) to call this API.
 # If you open index.html via file://, browser origin becomes "null"; serve the
@@ -213,6 +202,7 @@ class RegisterResponse(BaseModel):
     name: str
     face_id: str
     liveness: Optional[LivenessResult] = None
+    geo: Optional[dict] = None
     embedding_mode: str
     message: str
 
@@ -222,6 +212,7 @@ class MatchResult(BaseModel):
     name: str
     score: float
     liveness: Optional[LivenessResult] = None
+    geo: Optional[dict] = None
     embedding_mode: str
     auto_updated: bool = False
     bbox: Optional[list[int]] = None
@@ -232,6 +223,7 @@ class MatchResponse(BaseModel):
     results: list[MatchResult]
     total_faces: int
     matched_count: int
+    geo: Optional[dict] = None
 
 class DetectResponse(BaseModel):
     faces: list[FaceInfo]
@@ -334,6 +326,29 @@ def _do_auto_update(name: str, score: float, mode: str,
     return added
 
 
+async def _resolve_geo(
+    image_bytes: bytes,
+    lat: Optional[float],
+    lon: Optional[float],
+    accuracy_m: Optional[float],
+    zone_id: Optional[str],
+    skip_geocode: bool,
+) -> dict:
+    geo = await geotag_event(
+        lat=lat,
+        lon=lon,
+        source="browser",
+        accuracy_m=accuracy_m,
+        image_bytes=image_bytes,
+        zone_id=zone_id,
+        skip_geocode=skip_geocode,
+    )
+    geo_dict = geo.to_dict()
+    if GEOFENCE_ENFORCE and not geo.geofence_passed:
+        raise HTTPException(status_code=403, detail=f"Geofence failed: {geo.geofence_reason}")
+    return geo_dict
+
+
 # ═══════════════════════════════════════════════
 # ── /status ──────────────────────────────────
 # ═══════════════════════════════════════════════
@@ -399,6 +414,11 @@ async def register(
     skip_liveness: bool      = Form(False, description="Bypass liveness check (not recommended for production)"),
     passive_only: bool       = Form(True,  description="Passive liveness only — no camera challenge needed"),
     camera_index: int        = Form(0,     description="Camera index for active liveness challenge"),
+    lat:          Optional[float] = Form(None, description="Latitude from client geolocation"),
+    lon:          Optional[float] = Form(None, description="Longitude from client geolocation"),
+    accuracy_m:   Optional[float] = Form(None, description="GPS accuracy in meters"),
+    zone_id:      Optional[str]   = Form(None, description="Optional geofence zone id"),
+    skip_geocode: bool            = Form(False, description="Skip reverse geocoding lookup"),
 ):
     """
     Register a new person into the database.
@@ -415,7 +435,16 @@ async def register(
             detail=f"'{name}' is already registered. Duplicate registration is not allowed.",
         )
 
-    raw = _decode_image(await image.read())
+    image_bytes = await image.read()
+    raw = _decode_image(image_bytes)
+    geo = await _resolve_geo(
+        image_bytes=image_bytes,
+        lat=lat,
+        lon=lon,
+        accuracy_m=accuracy_m,
+        zone_id=zone_id,
+        skip_geocode=skip_geocode,
+    )
     preprocessed, faces = _run_pipeline(raw)
 
     if not faces:
@@ -452,6 +481,7 @@ async def register(
                     "name":     name,
                     "face_id":  face["face_id"],
                     "liveness": liveness_result.dict(),
+                    "geo":      geo,
                     "embedding_mode": "",
                     "message":  f"Liveness failed: {liveness_result.reason}",
                 },
@@ -475,6 +505,7 @@ async def register(
         "name":           name,
         "face_id":        face["face_id"],
         "liveness":       liveness_result,
+        "geo":            geo,
         "embedding_mode": mode,
         "message":        f"'{name}' registered successfully.",
     }
@@ -491,6 +522,11 @@ async def match(
     passive_only: bool       = Form(True,  description="Passive liveness only"),
     camera_index: int        = Form(0,     description="Camera index for active liveness"),
     auto_update:  bool       = Form(True,  description="Auto-update templates on high-confidence match"),
+    lat:          Optional[float] = Form(None, description="Latitude from client geolocation"),
+    lon:          Optional[float] = Form(None, description="Longitude from client geolocation"),
+    accuracy_m:   Optional[float] = Form(None, description="GPS accuracy in meters"),
+    zone_id:      Optional[str]   = Form(None, description="Optional geofence zone id"),
+    skip_geocode: bool            = Form(False, description="Skip reverse geocoding lookup"),
 ):
     """
     Identify all faces in an image against the database.
@@ -500,11 +536,20 @@ async def match(
 
     **Attendance use-case:** call this endpoint with each captured frame/image.
     """
-    raw = _decode_image(await image.read())
+    image_bytes = await image.read()
+    raw = _decode_image(image_bytes)
+    geo = await _resolve_geo(
+        image_bytes=image_bytes,
+        lat=lat,
+        lon=lon,
+        accuracy_m=accuracy_m,
+        zone_id=zone_id,
+        skip_geocode=skip_geocode,
+    )
     preprocessed, faces = _run_pipeline(raw)
 
     if not faces:
-        return {"results": [], "total_faces": 0, "matched_count": 0}
+        return {"results": [], "total_faces": 0, "matched_count": 0, "geo": geo}
 
     passed_faces, _ = _quality_filter(raw, faces)
     rejected_faces = [f for f in faces if not f.get("quality", {}).get("passed", False)]
@@ -519,6 +564,7 @@ async def match(
             name="Rejected",
             score=0.0,
             liveness=None,
+            geo=geo,
             embedding_mode="",
             auto_updated=False,
             bbox=face.get("bbox"),
@@ -552,6 +598,7 @@ async def match(
                     name=name,
                     score=0.0,
                     liveness=liveness_result,
+                    geo=geo,
                     embedding_mode="",
                     auto_updated=False,
                     bbox=face.get("bbox"),
@@ -578,6 +625,7 @@ async def match(
             name=name,
             score=score,
             liveness=liveness_result,
+            geo=geo,
             embedding_mode=mode,
             auto_updated=updated,
             bbox=face.get("bbox"),
@@ -589,6 +637,7 @@ async def match(
         "results":       results,
         "total_faces":   len(faces),
         "matched_count": matched_count,
+        "geo":           geo,
     }
 
 
@@ -602,6 +651,11 @@ async def log_attendance(
     skip_liveness: bool      = Form(False),
     passive_only: bool       = Form(True),
     camera_index: int        = Form(0),
+    lat:          Optional[float] = Form(None),
+    lon:          Optional[float] = Form(None),
+    accuracy_m:   Optional[float] = Form(None),
+    zone_id:      Optional[str]   = Form(None),
+    skip_geocode: bool            = Form(False),
 ):
     """
     Convenience endpoint: match all faces and return an attendance-ready payload.
@@ -613,7 +667,16 @@ async def log_attendance(
     - `timestamp`: UTC epoch seconds
     - Full per-face detail
     """
-    raw = _decode_image(await image.read())
+    image_bytes = await image.read()
+    raw = _decode_image(image_bytes)
+    geo = await _resolve_geo(
+        image_bytes=image_bytes,
+        lat=lat,
+        lon=lon,
+        accuracy_m=accuracy_m,
+        zone_id=zone_id,
+        skip_geocode=skip_geocode,
+    )
     preprocessed, faces = _run_pipeline(raw)
     passed_faces, _ = _quality_filter(raw, faces)
 
@@ -666,6 +729,7 @@ async def log_attendance(
         "unknown_count": unknown,
         "spoofed_count": spoofed,
         "total_faces":   len(passed_faces),
+        "geo":           geo,
         "detail":        detail,
     }
 

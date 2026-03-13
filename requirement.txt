@@ -18,3 +18,8 @@ qdrant-client
 fastapi
 uvicorn
 python-multipart
+geopy 
+shapely 
+piexif timezonefinder 
+cachetools
+geopy[aiohttp]
