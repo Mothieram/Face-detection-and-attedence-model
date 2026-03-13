@@ -23,6 +23,9 @@ from config import (
     NOMINATIM_USER_AGENT,
 )
 
+# ---------------------------------------------------------------------------
+# Module setup and optional dependency loaders
+# ---------------------------------------------------------------------------
 logger = logging.getLogger("faceapi.geo")
 
 
@@ -51,6 +54,9 @@ def _import_timezonefinder():
     return TimezoneFinder
 
 
+# ---------------------------------------------------------------------------
+# Data models
+# ---------------------------------------------------------------------------
 @dataclass
 class Coordinates:
     lat: float
@@ -111,6 +117,9 @@ class GeoInfo:
         }
 
 
+# ---------------------------------------------------------------------------
+# Lightweight in-memory TTL cache (for reverse geocode results)
+# ---------------------------------------------------------------------------
 class _TTLCache:
     def __init__(self, maxsize: int, ttl: int):
         self._maxsize = maxsize
@@ -146,6 +155,9 @@ _tz_finder = None
 _tz_finder_lock = threading.Lock()
 
 
+# ---------------------------------------------------------------------------
+# Timezone finder singleton bootstrap
+# ---------------------------------------------------------------------------
 def _get_tz_finder():
     global _tz_finder
     if _tz_finder is not None:
@@ -160,6 +172,9 @@ def _get_tz_finder():
     return _tz_finder if _tz_finder else None
 
 
+# ---------------------------------------------------------------------------
+# EXIF GPS extraction
+# ---------------------------------------------------------------------------
 def extract_exif_gps(jpeg_bytes: bytes) -> Optional[Coordinates]:
     try:
         piexif = _import_piexif()
@@ -200,6 +215,9 @@ def extract_exif_gps(jpeg_bytes: bytes) -> Optional[Coordinates]:
         return None
 
 
+# ---------------------------------------------------------------------------
+# Geofence helpers (circle and polygon)
+# ---------------------------------------------------------------------------
 def _haversine_m(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
     r = 6_371_000.0
     phi1, phi2 = math.radians(lat1), math.radians(lat2)
@@ -283,6 +301,9 @@ def check_geofence(lat: float, lon: float, zone_id: Optional[str] = None) -> dic
     }
 
 
+# ---------------------------------------------------------------------------
+# Reverse geocoding backends + cache wrapper
+# ---------------------------------------------------------------------------
 def _empty_geocode(error: str = "") -> dict:
     return {
         "address": "",
@@ -325,6 +346,7 @@ async def reverse_geocode(lat: float, lon: float) -> dict:
     return result
 
 
+# Backend-specific reverse geocode implementations
 async def _nominatim_reverse(lat: float, lon: float) -> dict:
     nominatim_cls, aio_adapter = _import_geopy_async()
     async with nominatim_cls(
@@ -396,6 +418,9 @@ async def _here_reverse(lat: float, lon: float) -> dict:
     }
 
 
+# ---------------------------------------------------------------------------
+# Timezone + local timestamp helpers
+# ---------------------------------------------------------------------------
 def resolve_timezone(lat: float, lon: float) -> Optional[str]:
     tf = _get_tz_finder()
     if tf is None:
@@ -427,6 +452,9 @@ def local_iso_timestamp(lat: float, lon: float) -> str:
         return now_utc.isoformat()
 
 
+# ---------------------------------------------------------------------------
+# Main pipeline entrypoint
+# ---------------------------------------------------------------------------
 async def geotag_event(
     lat: Optional[float] = None,
     lon: Optional[float] = None,
@@ -485,10 +513,16 @@ async def geotag_event(
     return geo
 
 
+# ---------------------------------------------------------------------------
+# Compatibility helper for FastAPI form defaults
+# ---------------------------------------------------------------------------
 def make_geo_form_fields():
     return None, None, None
 
 
+# ---------------------------------------------------------------------------
+# Local self-test (run: python -m modules.geotagging)
+# ---------------------------------------------------------------------------
 if __name__ == "__main__":
     test_lat = 12.9716
     test_lon = 77.5946
