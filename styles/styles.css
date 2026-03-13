@@ -564,3 +564,160 @@ header {
     border-color: var(--warn);
     color: var(--warn);
 }
+
+/* ── Geo Card v2 (thumbnail style) ───────────────────── */
+.geo-card-v2 {
+    display: flex;
+    align-items: stretch;
+    gap: 0;
+    margin-top: 6px;
+    border-radius: 10px;
+    overflow: hidden;
+    background: #1c1c28;
+    border: 1px solid var(--border);
+    text-decoration: none;
+    animation: pop .18s ease;
+    transition: border-color .15s, box-shadow .15s;
+}
+
+.geo-card-v2:hover {
+    border-color: rgba(74, 240, 160, 0.4);
+    box-shadow: 0 0 16px rgba(74, 240, 160, 0.08);
+}
+
+.geo-thumb-wrap {
+    position: relative;
+    width: 100px;
+    min-height: 80px;
+    flex-shrink: 0;
+    background: #111118;
+    overflow: hidden;
+}
+
+.geo-thumb {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+    filter: saturate(0.8) brightness(0.85);
+}
+
+.geo-thumb-fallback {
+    width: 100%;
+    height: 100%;
+    display: grid;
+    place-items: center;
+    font-size: 28px;
+    background: #111118;
+    color: var(--muted);
+}
+
+.geo-thumb-pin {
+    position: absolute;
+    bottom: 6px;
+    left: 50%;
+    transform: translateX(-50%);
+    font-size: 20px;
+    filter: drop-shadow(0 1px 3px rgba(0, 0, 0, 0.8));
+    pointer-events: none;
+}
+
+.geo-info {
+    flex: 1;
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    gap: 3px;
+    min-width: 0;
+}
+
+.geo-info-line1 {
+    font-family: var(--font);
+    font-size: 13px;
+    font-weight: 800;
+    color: var(--text);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    letter-spacing: 0.1px;
+}
+
+.geo-info-line2 {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-top: 1px;
+}
+
+.geo-info-coords {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--accent);
+    margin-top: 2px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.geo-info-time {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--muted);
+    margin-top: 1px;
+}
+
+/* ── GPS Permission Banner ────────────────────────────── */
+.gps-banner {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin-top: 16px;
+    padding: 12px 16px;
+    border-radius: var(--r);
+    background: rgba(255, 107, 107, 0.08);
+    border: 1px solid rgba(255, 107, 107, 0.45);
+    color: var(--text);
+    font-size: 13px;
+    animation: pop .2s ease;
+    flex-wrap: wrap;
+}
+
+.gps-banner.hidden {
+    display: none;
+}
+
+.gps-banner-icon {
+    font-size: 16px;
+    flex-shrink: 0;
+}
+
+.gps-banner-text {
+    flex: 1;
+    min-width: 0;
+    line-height: 1.5;
+    color: #ffcaca;
+}
+
+.gps-banner-btn {
+    padding: 5px 14px;
+    border-radius: 6px;
+    border: 1px solid rgba(255, 107, 107, 0.6);
+    background: rgba(255, 107, 107, 0.12);
+    color: var(--warn);
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 600;
+    cursor: pointer;
+    white-space: nowrap;
+    transition: all .15s;
+    flex-shrink: 0;
+}
+
+.gps-banner-btn:hover {
+    background: rgba(255, 107, 107, 0.22);
+    border-color: var(--warn);
+}
