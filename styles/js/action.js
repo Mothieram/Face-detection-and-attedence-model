@@ -2,6 +2,7 @@
 // High-level button actions: capture + match, capture + register.
 
 import { apiFetch } from "./api.js";
+import { PASSIVE_REAL_THRESHOLD } from "./config.js";
 import { toast } from "./toast.js";
 import { stream, captureFrameBlob } from "./camera.js";
 import {
@@ -12,6 +13,13 @@ import {
 import { geoCoords } from "./geo.js";
 import { renderResults } from "./result.js";
 import { buildGeoCard } from "./geocard.js";
+
+function blurActiveInput() {
+  const el = document.activeElement;
+  if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA")) {
+    el.blur();
+  }
+}
 
 // ── Shared liveness pre-flight ────────────────────────
 async function livenessPreFlight(passiveOnly) {
@@ -28,18 +36,21 @@ async function livenessPreFlight(passiveOnly) {
     reason: String(e),
   }));
   const reason = String(passive.reason || "").toLowerCase();
+  const passiveScore = Number(passive.score || 0);
+
+  if (passiveScore >= PASSIVE_REAL_THRESHOLD) {
+    toast(`Passive real (${passiveScore.toFixed(2)}), skipping active`, false);
+    return true;
+  }
 
   if (passive.passed) {
-    toast(
-      `Passive real (${Number(passive.score || 0).toFixed(2)}), skipping active`,
-      false,
-    );
+    toast(`Passive real (${passiveScore.toFixed(2)}), skipping active`, false);
     return true;
   }
 
   if (reason.includes("spoof")) {
     document.getElementById("results").innerHTML =
-      `<div class="empty" style="color:var(--warn)">Passive spoof detected (${Number(passive.score || 0).toFixed(2)})</div>`;
+      `<div class="empty" style="color:var(--warn)">Passive spoof detected (${passiveScore.toFixed(2)})</div>`;
     toast("Passive spoof detected", true);
     return false;
   }
@@ -76,6 +87,8 @@ export async function captureAndMatch() {
     toast("Start camera first", true);
     return;
   }
+
+  blurActiveInput();
 
   const flash = document.getElementById("flash");
   const passiveOnly = document.getElementById("opt-passive").checked;
@@ -132,6 +145,8 @@ export async function captureAndRegister() {
     return;
   }
 
+  blurActiveInput();
+
   const name = (document.getElementById("reg-name").value || "").trim();
   if (!name) {
     toast("Enter register name", true);
@@ -170,6 +185,15 @@ export async function captureAndRegister() {
     const payload = await r.json().catch(() => ({}));
     if (!r.ok)
       throw new Error(payload.detail || payload.message || `${r.status}`);
+
+    const lockedY = window.scrollY;
+    const deadline = performance.now() + 2500;
+    const lockFrame = (now) => {
+      if (window.scrollY !== lockedY)
+        window.scrollTo({ top: lockedY, behavior: "instant" });
+      if (now < deadline) requestAnimationFrame(lockFrame);
+    };
+    requestAnimationFrame(lockFrame);
 
     document.getElementById("results").innerHTML = `
       <div class="card matched">

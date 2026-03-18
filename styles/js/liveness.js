@@ -2,7 +2,12 @@
 // Keeps UI consistent and delegates final checks to backend /liveness.
 
 import { apiFetch } from "./api.js";
-import { captureFrameBlob, startLiveDetect, stopLiveDetect, stream } from "./camera.js";
+import {
+  captureFrameBlob,
+  getLargestLiveFace,
+  startLiveDetect,
+  stream,
+} from "./camera.js";
 import {
   ACTIVE_CALIB_MIN,
   ACTIVE_CALIB_TARGET,
@@ -49,7 +54,12 @@ export async function runPassiveLivenessCheck(imageBlob) {
 }
 
 export async function runClientActiveChallenge() {
-  stopLiveDetect();
+  if (!stream) {
+    return { passed: false, reason: "Camera not running", score: 0 };
+  }
+
+  // Use the existing live detect loop instead of firing extra /detect bursts.
+  startLiveDetect(350);
 
   // 1) Calibrate neutral head pose
   setChallengeUI("Calibration: hold face straight", 0, false, true);
@@ -57,7 +67,7 @@ export async function runClientActiveChallenge() {
   const calibDeadline = Date.now() + 3000;
 
   while (Date.now() < calibDeadline && neutralSamples.length < ACTIVE_CALIB_TARGET) {
-    const face = await _detectLargestFaceOnce();
+    const face = getLargestLiveFace();
     if (face?.landmarks) {
       neutralSamples.push(_estimateYawFromLandmarks(face.landmarks));
     }
@@ -72,7 +82,7 @@ export async function runClientActiveChallenge() {
   }
 
   if (neutralSamples.length < ACTIVE_CALIB_MIN) {
-    if (stream) startLiveDetect();
+    if (stream) startLiveDetect(700);
     setChallengeUI("Calibration failed", 100, true, true);
     return { passed: false, reason: "Face not stable for calibration", score: 0 };
   }
@@ -83,7 +93,7 @@ export async function runClientActiveChallenge() {
   // 2) Ask for one clear turn either side from neutral
   const deadline = Date.now() + ACTIVE_TIMEOUT_MS;
   while (Date.now() < deadline) {
-    const face = await _detectLargestFaceOnce();
+    const face = getLargestLiveFace();
     const remaining = Math.max(0, deadline - Date.now());
     const secs = (remaining / 1000).toFixed(1);
 
@@ -96,7 +106,7 @@ export async function runClientActiveChallenge() {
       setChallengeUI(`Turn head LEFT or RIGHT (${secs}s)`, turnProgress, false, true);
 
       if (Math.abs(yaw) >= ACTIVE_TURN_THRESHOLD) {
-        if (stream) startLiveDetect();
+        if (stream) startLiveDetect(700);
         setChallengeUI("Active challenge passed", 100, false, true);
         return { passed: true, reason: "Active challenge passed", score: 1 };
       }
@@ -107,22 +117,9 @@ export async function runClientActiveChallenge() {
     await _sleep(220);
   }
 
-  if (stream) startLiveDetect();
+  if (stream) startLiveDetect(700);
   setChallengeUI("Head turn not detected", 100, true, true);
   return { passed: false, reason: "Head turn not detected in time", score: 0 };
-}
-
-async function _detectLargestFaceOnce() {
-  const blob = await captureFrameBlob(0.75);
-  if (!blob) return null;
-  const fd = new FormData();
-  fd.append("image", blob, "active.jpg");
-  const r = await apiFetch("/detect", { method: "POST", body: fd });
-  if (!r.ok) return null;
-  const payload = await r.json().catch(() => ({}));
-  const faces = Array.isArray(payload.faces) ? payload.faces : [];
-  if (!faces.length) return null;
-  return faces.sort((a, b) => (Number(b.score) || 0) - (Number(a.score) || 0))[0];
 }
 
 function _estimateYawFromLandmarks(landmarks) {

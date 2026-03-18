@@ -4,11 +4,12 @@
 
 import { toast } from "./toast.js";
 import { initStatus } from "./status.js";
-import { toggleCamera } from "./camera.js";
+import { toggleCamera, switchCamera } from "./camera.js";
 import { captureAndMatch, captureAndRegister } from "./action.js";
 
 // ── Expose to HTML onclick handlers ──────────────────
 window.toggleCamera = toggleCamera;
+window.switchCamera = switchCamera;
 window.captureAndMatch = captureAndMatch;
 window.captureAndRegister = captureAndRegister;
 
