@@ -16,6 +16,7 @@ Dependencies (add to requirements.txt):
 import io
 import sys
 import time
+import os
 import contextlib
 import logging
 from contextlib import asynccontextmanager
@@ -23,9 +24,10 @@ from contextlib import asynccontextmanager
 import cv2
 import numpy as np
 from fastapi import FastAPI, File, UploadFile, Form, HTTPException, Query, Depends, Security
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from typing import Optional
 
@@ -84,11 +86,11 @@ async def lifespan(app: FastAPI):
     Startup order:
       1. RetinaFace  (face detector   — PyTorch, ~100 MB)
       2. CVLFace     (face embedder   — AdaFace IR-101, ~250 MB)
-      3. SilentFace  (liveness ONNX   — V2 + V1SE, ~1 MB each)
+      3. Liveness    (4-model ensemble — ICM2O · IOM2C · modelrgb · SASF)
 
     Server will NOT start (process exits) if RetinaFace or CVLFace fail to load,
     since the pipeline is non-functional without them.
-    Liveness failure is a warning — the server starts but liveness will be skipped.
+    Individual liveness model failures are warnings — the ensemble continues with remaining models.
     """
     _startup_load_models()
     yield
@@ -120,16 +122,19 @@ def _startup_load_models() -> None:
         print(f"[STARTUP] ✗ {msg}", flush=True)
         failures.append(msg)
 
-    # ── SilentFace liveness models ────────────────────────────────────────
-    print("[STARTUP] Loading SilentFace liveness models (V2 + V1SE)...", flush=True)
+    # ── Liveness ensemble (ICM2O, IOM2C, modelrgb, SASF) ─────────────────
+    print("[STARTUP] Loading liveness ensemble (ICM2O · IOM2C · modelrgb · SASF)...", flush=True)
     try:
         _load_all_sessions()
-        from modules.liveness import _ort_sessions
-        if _ort_sessions:
-            loaded = list(_ort_sessions.keys())
+        from modules.liveness import _models
+        loaded = [k for k, v in _models.items() if v is not None]
+        failed = [k for k, v in _models.items() if v is None]
+        if loaded:
             print(f"[STARTUP] ✓ Liveness ready — {loaded}", flush=True)
-        else:
-            print("[STARTUP] ⚠ Liveness models unavailable — passive check will be skipped", flush=True)
+        if failed:
+            print(f"[STARTUP] ⚠ Some liveness models failed — {failed} (ensemble redistributes weights)", flush=True)
+        if not loaded:
+            print("[STARTUP] ⚠ All liveness models unavailable — passive check will be skipped", flush=True)
     except Exception as exc:
         print(f"[STARTUP] ⚠ Liveness load error: {exc}", flush=True)
 
@@ -156,8 +161,15 @@ app = FastAPI(
     ),
     version="1.0.0",
     lifespan=lifespan,
-    dependencies=[Depends(require_api_key)],
 )
+
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+app.mount("/styles", StaticFiles(directory=os.path.join(_BASE_DIR, "styles")), name="styles")
+
+
+@app.get("/", include_in_schema=False)
+def serve_index():
+    return FileResponse(os.path.join(_BASE_DIR, "index.html"))
 
 # Allow browser clients (including local static dev servers) to call this API.
 # If you open index.html via file://, browser origin becomes "null"; serve the
@@ -196,6 +208,7 @@ class LivenessResult(BaseModel):
     method: str
     score: float
     reason: str
+    model_scores: Optional[dict] = None   # per-model spoof probabilities from ensemble
 
 class RegisterResponse(BaseModel):
     success: bool
@@ -472,6 +485,7 @@ async def register(
             method=liveness_raw.get("method", "passive"),
             score=float(liveness_raw.get("score", 0.0)),
             reason=liveness_raw.get("reason", ""),
+            model_scores=liveness_raw.get("model_scores"),
         )
         if not liveness_result.passed:
             return JSONResponse(
@@ -586,6 +600,7 @@ async def match(
                 method=liveness_raw.get("method", "passive"),
                 score=float(liveness_raw.get("score", 0.0)),
                 reason=liveness_raw.get("reason", ""),
+                model_scores=liveness_raw.get("model_scores"),
             )
             if not liveness_result.passed:
                 reason_text = (liveness_result.reason or "").strip().lower()
@@ -758,10 +773,11 @@ async def liveness_check(
     lv   = _liveness_check(raw, face,
                             camera_index=camera_index, skip_active=passive_only)
     return {
-        "passed": lv.get("passed", False),
-        "method": lv.get("method", "passive"),
-        "score":  float(lv.get("score", 0.0)),
-        "reason": lv.get("reason", ""),
+        "passed":       lv.get("passed", False),
+        "method":       lv.get("method", "passive"),
+        "score":        float(lv.get("score", 0.0)),
+        "reason":       lv.get("reason", ""),
+        "model_scores": lv.get("model_scores"),
     }
 
 
