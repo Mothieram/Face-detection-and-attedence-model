@@ -125,7 +125,7 @@ BLUR_THRESHOLD = MIN_BLUR_SCORE
 # ─────────────────────────────────────────────
 
 # Passive spoof detection (SilentFace)
-LIVENESS_PASSIVE_REAL_THRESHOLD = 0.70
+LIVENESS_PASSIVE_REAL_THRESHOLD = 0.55
 LIVENESS_PASSIVE_SPOOF_THRESHOLD = 0.50
 # For SilentFace ONNX exports with 3 classes, class index 2 is typically "real".
 LIVENESS_PASSIVE_REAL_CLASS_INDEX = 2
@@ -223,7 +223,7 @@ CACHE_GRID_DEG: float = 0.0001
 GEOFENCE_ZONES: list = [{ "id": "office", 
                          "name": "Main Office",
                          "type": "circle", 
-                         "center": [11.021442719586735, 76.97830607245928], 
+                         "center": [11.019751378519258, 76.97866478828647], 
                          "radius_m": 50},
                         ]
  
