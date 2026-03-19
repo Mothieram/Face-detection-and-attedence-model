@@ -2,7 +2,9 @@
 // Central place for API base URL, auth key, and tuning constants.
 
 function normalizeBaseUrl(url) {
-  return String(url || "").trim().replace(/\/+$/, "");
+  return String(url || "")
+    .trim()
+    .replace(/\/+$/, "");
 }
 
 const apiFromQuery = new URLSearchParams(window.location.search).get("api");
@@ -11,7 +13,13 @@ const apiFromStorage = window.localStorage.getItem("API_BASE");
 export const API = normalizeBaseUrl(
   apiFromQuery ||
     apiFromStorage ||
-    (window.location.protocol === "file:" ? "http://localhost:8000" : ""),
+    // file:// protocol → explicit localhost (no origin available)
+    // http/https       → use whatever origin served the page.
+    //                    Works for localhost:8000, ngrok tunnels, and
+    //                    any other public URL without changing this file.
+    (window.location.protocol === "file:"
+      ? "http://localhost:8000"
+      : window.location.origin),
 );
 
 // All endpoints are under /v1/

@@ -9,6 +9,9 @@ import { API_V1, API_KEY } from "./config.js";
 export async function apiFetch(path, options = {}) {
   const headers = new Headers(options.headers || {});
   headers.set("X-API-Key", API_KEY);
+  // Tells ngrok to skip its browser interstitial warning page and return
+  // the real API response directly. Harmless on non-ngrok servers.
+  headers.set("ngrok-skip-browser-warning", "true");
   return fetch(`${API_V1}${path}`, { ...options, headers });
 }
 
