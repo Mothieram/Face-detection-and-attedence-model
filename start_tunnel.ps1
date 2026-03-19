@@ -121,8 +121,8 @@ try {
         }
 
         try {
-            # Probe /status — root / returns 404 on FastAPI which throws on Invoke-WebRequest
-            $resp = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/status" -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop
+            # Probe /v1/status — all routes are under /v1/ prefix
+            $resp = Invoke-WebRequest -Uri "http://127.0.0.1:$Port/v1/status" -UseBasicParsing -TimeoutSec 2 -ErrorAction Stop
             if ($resp.StatusCode -lt 500) {
                 $backendReady = $true
                 break
