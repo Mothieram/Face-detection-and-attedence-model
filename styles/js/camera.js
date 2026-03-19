@@ -144,7 +144,7 @@ async function tickLiveDetect() {
         try {
           const fd = new FormData();
           fd.append("image", blob, "live.jpg");
-          const r = await apiFetch("/detect", { method: "POST", body: fd });
+          const r = await apiFetch("/faces/detections", { method: "POST", body: fd });
           if (!r.ok) throw new Error(`detect ${r.status}`);
           const data = await r.json();
           const faces = data.faces || [];
@@ -390,3 +390,4 @@ export async function switchCamera() {
     /* ignore */
   }
 }
+

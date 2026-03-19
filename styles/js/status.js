@@ -1,5 +1,5 @@
 // ── status.js ─────────────────────────────────────────
-// Server status bar: polls /status and updates the header pills.
+// Server status bar: polls /v1/status and updates the header pills.
 
 import { apiFetch } from "./api.js";
 import { toast } from "./toast.js";

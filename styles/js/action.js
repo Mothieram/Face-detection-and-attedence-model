@@ -1,7 +1,7 @@
 // ── actions.js ────────────────────────────────────────
 // High-level button actions: capture + match, capture + register.
 
-import { apiFetch } from "./api.js";
+import { apiFetch, extractErrorMessage } from "./api.js";
 import { PASSIVE_REAL_THRESHOLD } from "./config.js";
 import { toast } from "./toast.js";
 import { stream, captureFrameBlob } from "./camera.js";
@@ -116,13 +116,11 @@ export async function captureAndMatch() {
   appendGeoToForm(fd);
 
   try {
-    const r = await apiFetch("/match", { method: "POST", body: fd });
+    // POST /v1/faces/matches
+    const r = await apiFetch("/faces/matches", { method: "POST", body: fd });
     if (!r.ok) {
-      let detail = `${r.status}`;
-      try {
-        detail = (await r.json()).detail || detail;
-      } catch {}
-      throw new Error(detail);
+      const payload = await r.json().catch(() => null);
+      throw new Error(extractErrorMessage(payload, r.status));
     }
     renderResults(await r.json());
   } catch (e) {
@@ -181,16 +179,27 @@ export async function captureAndRegister() {
   appendGeoToForm(fd);
 
   try {
-    const r = await apiFetch("/register", { method: "POST", body: fd });
+    // POST /v1/persons — expects 201 Created
+    const r = await apiFetch("/persons", { method: "POST", body: fd });
     const payload = await r.json().catch(() => ({}));
-    if (!r.ok)
-      throw new Error(payload.detail || payload.message || `${r.status}`);
 
+    if (!r.ok) {
+      // Handle liveness failure (403) — payload is in detail.liveness
+      if (r.status === 403 && payload.detail?.liveness) {
+        const lv = payload.detail.liveness;
+        throw new Error(
+          `Liveness failed: ${lv.reason} (score ${Number(lv.score).toFixed(2)})`,
+        );
+      }
+      throw new Error(extractErrorMessage(payload, r.status));
+    }
+
+    // 201 Created — success
     const lockedY = window.scrollY;
     const deadline = performance.now() + 2500;
     const lockFrame = (now) => {
       if (window.scrollY !== lockedY)
-        window.scrollTo({ top: lockedY, behavior: "instant" });
+        window.scrollTo({ top: lockedY, behavior: "auto" });
       if (now < deadline) requestAnimationFrame(lockFrame);
     };
     requestAnimationFrame(lockFrame);

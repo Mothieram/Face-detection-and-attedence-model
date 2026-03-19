@@ -13,6 +13,7 @@ from config import (
 _RETINAFACE_MODEL = None
 _RETINAFACE_DEVICE = "cuda" if torch.cuda.is_available() else "cpu"
 _RETINAFACE_LOGGED = False
+_RETINAFACE_AVAILABLE = True
 
 
 def detect_faces(image: np.ndarray) -> list[dict]:
@@ -23,6 +24,8 @@ def detect_faces(image: np.ndarray) -> list[dict]:
     """
     _log_backend_once()
     model = _get_retinaface_model()
+    if model is None:
+        return _fallback_detect_faces_haar(image)
 
     all_faces = []
     for scale in DETECTION_SCALE_PASSES:
@@ -84,20 +87,29 @@ def detect_faces(image: np.ndarray) -> list[dict]:
 
 
 def _get_retinaface_model():
-    global _RETINAFACE_MODEL
+    global _RETINAFACE_MODEL, _RETINAFACE_AVAILABLE
     if _RETINAFACE_MODEL is not None:
         return _RETINAFACE_MODEL
+    if not _RETINAFACE_AVAILABLE:
+        return None
 
     try:
         from retinaface.pre_trained_models import get_model
     except Exception as e:
-        raise RuntimeError(f"[DETECT] retinaface-pytorch import failed: {e}") from e
+        print(f"[DETECT] RetinaFace import failed, using Haar fallback: {e}")
+        _RETINAFACE_AVAILABLE = False
+        return None
 
-    # The package downloads pretrained weights on first run if missing.
-    model = get_model("resnet50_2020-07-20", max_size=960, device=_RETINAFACE_DEVICE)
-    model.eval()
-    _RETINAFACE_MODEL = model
-    return model
+    try:
+        # The package downloads pretrained weights on first run if missing.
+        model = get_model("resnet50_2020-07-20", max_size=960, device=_RETINAFACE_DEVICE)
+        model.eval()
+        _RETINAFACE_MODEL = model
+        return model
+    except Exception as e:
+        print(f"[DETECT] RetinaFace init failed, using Haar fallback: {e}")
+        _RETINAFACE_AVAILABLE = False
+        return None
 
 
 def _predict_faces_pytorch(model, image_bgr: np.ndarray) -> list[dict]:
@@ -130,8 +142,46 @@ def _log_backend_once() -> None:
     global _RETINAFACE_LOGGED
     if _RETINAFACE_LOGGED:
         return
-    print(f"[DETECT] RetinaFace backend: PyTorch ({_RETINAFACE_DEVICE})")
+    backend = f"RetinaFace PyTorch ({_RETINAFACE_DEVICE})" if _RETINAFACE_AVAILABLE else "OpenCV Haar fallback"
+    print(f"[DETECT] Detection backend: {backend}")
     _RETINAFACE_LOGGED = True
+
+
+def _fallback_detect_faces_haar(image: np.ndarray) -> list[dict]:
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    cascade_path = cv2.data.haarcascades + "haarcascade_frontalface_default.xml"
+    cascade = cv2.CascadeClassifier(cascade_path)
+    if cascade.empty():
+        return []
+
+    boxes = cascade.detectMultiScale(
+        gray,
+        scaleFactor=1.1,
+        minNeighbors=5,
+        minSize=(MIN_FACE_SIZE_PX, MIN_FACE_SIZE_PX),
+    )
+
+    faces = []
+    for idx, (x, y, w, h) in enumerate(boxes, 1):
+        x1, y1, x2, y2 = int(x), int(y), int(x + w), int(y + h)
+        landmarks = {
+            "right_eye": [x1 + int(0.35 * w), y1 + int(0.38 * h)],
+            "left_eye": [x1 + int(0.65 * w), y1 + int(0.38 * h)],
+            "nose": [x1 + int(0.50 * w), y1 + int(0.56 * h)],
+            "mouth_right": [x1 + int(0.40 * w), y1 + int(0.76 * h)],
+            "mouth_left": [x1 + int(0.60 * w), y1 + int(0.76 * h)],
+        }
+        faces.append(
+            {
+                "score": 0.60,
+                "bbox": [x1, y1, x2, y2],
+                "landmarks": landmarks,
+                "face_id": f"face_{idx}",
+            }
+        )
+
+    faces.sort(key=lambda x: x["score"], reverse=True)
+    return faces
 
 
 def _nms_faces(faces: list[dict], iou_thresh: float) -> list[dict]:

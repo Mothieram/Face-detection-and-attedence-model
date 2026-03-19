@@ -1,8 +1,21 @@
 // ── config.js ─────────────────────────────────────────
 // Central place for API base URL, auth key, and tuning constants.
 
-export const API =
-  window.location.protocol === "file:" ? "http://localhost:8000" : "";
+function normalizeBaseUrl(url) {
+  return String(url || "").trim().replace(/\/+$/, "");
+}
+
+const apiFromQuery = new URLSearchParams(window.location.search).get("api");
+const apiFromStorage = window.localStorage.getItem("API_BASE");
+
+export const API = normalizeBaseUrl(
+  apiFromQuery ||
+    apiFromStorage ||
+    (window.location.protocol === "file:" ? "http://localhost:8000" : ""),
+);
+
+// All endpoints are under /v1/
+export const API_V1 = `${API}/v1`;
 
 export const API_KEY = "developer_key";
 

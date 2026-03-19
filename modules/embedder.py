@@ -46,7 +46,7 @@ def generate_embedding(aligned_face: np.ndarray) -> tuple[list, str]:
         return _cvlface_embedding(aligned_face, model), "cvlface"
 
     print("[EMBED] CVLFace unavailable — using fallback embedding.")
-    print("[EMBED] ⚠  Install: transformers huggingface_hub omegaconf hydra-core timm fvcore iopath yacs")
+    print("[EMBED] [WARN] Install: transformers huggingface_hub omegaconf hydra-core timm fvcore iopath yacs")
     return _enhanced_embedding(aligned_face), "fallback"
 
 
@@ -115,7 +115,7 @@ def _load_cvlface():
 
             _cvlface_model  = model
             _cvlface_device = device   # cache here — used in every _cvlface_embedding call
-            print(f"[EMBED] CVLFace loaded on {device} ✓")
+            print(f"[EMBED] CVLFace loaded on {device} [OK]")
             return model
 
         except ImportError as e:

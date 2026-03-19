@@ -1,7 +1,7 @@
 // Lightweight liveness helpers used by action.js.
-// Keeps UI consistent and delegates final checks to backend /liveness.
+// Keeps UI consistent and delegates final checks to backend /v1/faces/liveness.
 
-import { apiFetch } from "./api.js";
+import { apiFetch, extractErrorMessage } from "./api.js";
 import {
   captureFrameBlob,
   getLargestLiveFace,
@@ -15,7 +15,12 @@ import {
   ACTIVE_TURN_THRESHOLD,
 } from "./config.js";
 
-export function setChallengeUI(text, progress = 0, active = false, failed = false) {
+export function setChallengeUI(
+  text,
+  progress = 0,
+  active = false,
+  failed = false,
+) {
   const box = document.getElementById("challenge-box");
   const txt = document.getElementById("challenge-text");
   const fill = document.getElementById("challenge-fill");
@@ -36,13 +41,14 @@ export async function runPassiveLivenessCheck(imageBlob) {
   fd.append("passive_only", "true");
   fd.append("camera_index", "0");
 
-  const r = await apiFetch("/liveness", { method: "POST", body: fd });
+  // POST /v1/faces/liveness
+  const r = await apiFetch("/faces/liveness", { method: "POST", body: fd });
   const payload = await r.json().catch(() => ({}));
   if (!r.ok) {
     return {
       passed: false,
       score: 0,
-      reason: payload.detail || payload.reason || `http_${r.status}`,
+      reason: extractErrorMessage(payload, r.status),
     };
   }
   return {
@@ -58,7 +64,6 @@ export async function runClientActiveChallenge() {
     return { passed: false, reason: "Camera not running", score: 0 };
   }
 
-  // Use the existing live detect loop instead of firing extra /detect bursts.
   startLiveDetect(350);
 
   // 1) Calibrate neutral head pose
@@ -66,7 +71,10 @@ export async function runClientActiveChallenge() {
   const neutralSamples = [];
   const calibDeadline = Date.now() + 3000;
 
-  while (Date.now() < calibDeadline && neutralSamples.length < ACTIVE_CALIB_TARGET) {
+  while (
+    Date.now() < calibDeadline &&
+    neutralSamples.length < ACTIVE_CALIB_TARGET
+  ) {
     const face = getLargestLiveFace();
     if (face?.landmarks) {
       neutralSamples.push(_estimateYawFromLandmarks(face.landmarks));
@@ -84,13 +92,17 @@ export async function runClientActiveChallenge() {
   if (neutralSamples.length < ACTIVE_CALIB_MIN) {
     if (stream) startLiveDetect(700);
     setChallengeUI("Calibration failed", 100, true, true);
-    return { passed: false, reason: "Face not stable for calibration", score: 0 };
+    return {
+      passed: false,
+      reason: "Face not stable for calibration",
+      score: 0,
+    };
   }
 
   const sorted = [...neutralSamples].sort((a, b) => a - b);
   const neutralYaw = sorted[Math.floor(sorted.length / 2)];
 
-  // 2) Ask for one clear turn either side from neutral
+  // 2) Wait for head turn
   const deadline = Date.now() + ACTIVE_TIMEOUT_MS;
   while (Date.now() < deadline) {
     const face = getLargestLiveFace();
@@ -103,7 +115,12 @@ export async function runClientActiveChallenge() {
         100,
         Math.round((Math.abs(yaw) / ACTIVE_TURN_THRESHOLD) * 100),
       );
-      setChallengeUI(`Turn head LEFT or RIGHT (${secs}s)`, turnProgress, false, true);
+      setChallengeUI(
+        `Turn head LEFT or RIGHT (${secs}s)`,
+        turnProgress,
+        false,
+        true,
+      );
 
       if (Math.abs(yaw) >= ACTIVE_TURN_THRESHOLD) {
         if (stream) startLiveDetect(700);

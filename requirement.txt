@@ -16,6 +16,7 @@ iopath
 yacs
 qdrant-client
 fastapi
+slowapi
 uvicorn
 python-multipart
 geopy 

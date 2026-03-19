@@ -20,7 +20,7 @@ function lockScrollFor(durationMs) {
   const deadline = performance.now() + durationMs;
   function frame(now) {
     if (window.scrollY !== targetY) {
-      window.scrollTo({ top: targetY, behavior: "instant" });
+      window.scrollTo({ top: targetY, behavior: "auto" });
     }
     if (now < deadline) requestAnimationFrame(frame);
   }
