@@ -190,6 +190,19 @@ def serve_index():
     return FileResponse(os.path.join(_BASE_DIR, "index.html"))
 
 
+@app.get("/favicon.ico", include_in_schema=False)
+def favicon():
+    # Inline SVG favicon — stops the 404 log noise on every browser tab open.
+    svg = (
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">'
+        '<circle cx="16" cy="16" r="16" fill="#1a1a2e"/>'
+        '<circle cx="16" cy="13" r="6" fill="#4ade80"/>'
+        '<ellipse cx="16" cy="26" rx="9" ry="5" fill="#4ade80"/>'
+        "</svg>"
+    )
+    return Response(content=svg, media_type="image/svg+xml")
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
@@ -201,7 +214,13 @@ app.add_middleware(
         "http://127.0.0.1:3000",
         "http://127.0.0.1:5173",
     ],
-    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
+    allow_origin_regex=(
+        r"https?://(localhost|127\.0\.0\.1)(:\d+)?"
+        r"|https://[a-zA-Z0-9\-]+\.ngrok(-free)?\.app"
+        r"|https://[a-zA-Z0-9\-]+\.ngrok\.io"
+        r"|https://[a-zA-Z0-9\-]+\.loca\.lt"
+        r"|https://[a-zA-Z0-9\-]+\.trycloudflare\.com"
+    ),
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
