@@ -45,11 +45,11 @@ Browser / Camera
        ▼                                                         │
    api.py  (FastAPI)                                             │
        │                                                         │
-       ├── /detect   ──► detector.py  ──► RetinaFace             │
-       ├── /register ──► full pipeline (see below)               │
-       ├── /match    ──► full pipeline                           │
-       ├── /attendance ► full pipeline                           │
-       └── /liveness ──► liveness.py (ensemble)                  │
+       ├── /v1/faces/detections   ──► detector.py  ──► RetinaFace │
+       ├── /v1/persons            ──► full pipeline (register)    │
+       ├── /v1/faces/matches      ──► full pipeline (match)       │
+       ├── /v1/attendance/records ──► full pipeline               │
+       └── /v1/faces/liveness     ──► liveness.py (ensemble)      │
                                                                   │
 Full pipeline:                                                    │
   preprocessor.py                                                 │
@@ -73,7 +73,7 @@ Full pipeline:                                                    │
 
 ## Pipeline — step by step
 
-Every image that comes through `/register`, `/match`, or `/attendance` runs the same pipeline:
+Every image that comes through `/v1/persons`, `/v1/faces/matches`, or `/v1/attendance/records` runs the same pipeline:
 
 ### 1. Preprocess (`preprocessor.py`)
 
@@ -244,9 +244,9 @@ On first run, the server will download CVLFace (~250 MB) and liveness weights (~
 Startup output confirms what loaded:
 
 ```
-[STARTUP] ✓ RetinaFace ready
-[STARTUP] ✓ CVLFace ready
-[STARTUP] ✓ Liveness ready — ['icm2o', 'iom2c', 'modelrgb', 'sasf']
+[STARTUP] [OK] RetinaFace ready
+[STARTUP] [OK] CVLFace ready
+[STARTUP] [OK] Liveness ready - ['icm2o', 'iom2c', 'modelrgb', 'sasf']
 [STARTUP] All models loaded — server ready.
 ```
 
@@ -296,107 +296,41 @@ real_score < 0.50  →  FAIL  (clearly spoof)
 
 ## API reference
 
-All endpoints accept `multipart/form-data`. Authenticate by sending `X-API-Key: <your_key>` header (when `API_AUTH_ENABLED=true`).
+All image endpoints accept `multipart/form-data` and an `image` field.  
+Auth header (when enabled): `X-API-Key: <your_key>`.
 
-Interactive docs available at `http://localhost:8000/docs`.
+Interactive docs: `http://localhost:8000/docs`
 
-### `POST /register`
+### Core routes (`/v1`)
 
-Register a new person. Fails with 409 if the name already exists.
+- `GET /v1/status` — model status + DB tier info
+- `POST /v1/faces/detections` — detect faces + quality info
+- `POST /v1/faces/liveness` — liveness on largest face
+- `POST /v1/persons` — register person (`201 Created`)
+- `POST /v1/faces/matches` — match all faces in image
+- `POST /v1/attendance/records` — attendance summary payload
+- `GET /v1/persons` — list persons (pagination)
+- `GET /v1/persons/{name}` — check person exists
+- `DELETE /v1/persons/{name}` — delete person (`204 No Content`)
+- `GET /v1/db/tier` — active scaling tier and HNSW config
 
-| Field           | Type   | Required | Description                          |
-| --------------- | ------ | -------- | ------------------------------------ |
-| `image`         | file   | yes      | JPEG or PNG                          |
-| `name`          | string | yes      | Person's name                        |
-| `skip_liveness` | bool   | no       | Bypass liveness (default `false`)    |
-| `passive_only`  | bool   | no       | No camera challenge (default `true`) |
-| `lat` / `lon`   | float  | no       | GPS coordinates from browser         |
-| `accuracy_m`    | float  | no       | GPS accuracy in metres               |
+### Legacy compatibility routes
 
-**Response:**
+- `POST /v1/detect` (alias for `/v1/faces/detections`)
+
+### Example register response
 
 ```json
 {
   "success": true,
   "name": "Alice",
   "face_id": "face_0",
-  "liveness": { "passed": true, "method": "passive", "score": 0.82, "reason": "Passive ensemble: real", "model_scores": {...} },
-  "geo": { "coordinates": {...}, "address": "...", "city": "...", "geofence_passed": true },
+  "liveness": { "passed": true, "method": "passive", "score": 0.82, "reason": "Passive ensemble: real" },
+  "geo": { "coordinates": { "lat": 11.0, "lon": 76.9 }, "geofence_passed": true },
   "embedding_mode": "cvlface",
   "message": "'Alice' registered successfully."
 }
 ```
-
-### `POST /match`
-
-Identify all faces in an image. Returns one result per detected face.
-
-Same fields as `/register`, plus `auto_update` (bool, default `true`).
-
-**Response:**
-
-```json
-{
-  "results": [
-    {
-      "face_id": "face_0",
-      "matched": true,
-      "name": "Alice",
-      "score": 0.74,
-      "liveness": { "passed": true, ... },
-      "auto_updated": false,
-      "embedding_mode": "cvlface"
-    }
-  ],
-  "total_faces": 1,
-  "matched_count": 1
-}
-```
-
-### `POST /attendance`
-
-Convenience wrapper around `/match` that returns a clean attendance payload:
-
-```json
-{
-  "timestamp": 1710000000,
-  "present": ["Alice", "Bob"],
-  "present_count": 2,
-  "unknown_count": 0,
-  "spoofed_count": 0,
-  "total_faces": 2,
-  "geo": { ... },
-  "detail": [ { "face_id": "face_0", "status": "matched", "name": "Alice", "score": 0.74 } ]
-}
-```
-
-### `POST /detect`
-
-Run detection + quality check only. No embedding or matching.
-
-### `POST /liveness`
-
-Run liveness on the largest face in an image. Useful for testing the ensemble.
-
-### `GET /status`
-
-Health check. Returns which models are loaded and current DB tier.
-
-### `GET /db/list`
-
-List all registered people. Add `?include_embeddings=true` to include raw 512-d vectors.
-
-### `GET /db/exists?name=Alice`
-
-Check if a name is registered.
-
-### `DELETE /db/delete?name=Alice`
-
-Remove all templates for a person.
-
-### `GET /db/tier`
-
-Return current HNSW scaling tier info.
 
 ---
 
@@ -440,7 +374,7 @@ To implement active liveness from the browser, the client must pass `passive_onl
 
 ## Geofencing and geotagging
 
-`modules/geotagging.py` handles all location logic. It's called on every `/register`, `/match`, and `/attendance` request.
+`modules/geotagging.py` handles all location logic. It's called on `/v1/persons`, `/v1/faces/matches`, and `/v1/attendance/records`.
 
 ### Coordinate resolution order
 
@@ -523,7 +457,12 @@ The browser UI at `index.html` is built with 12 plain ES modules under `styles/j
 | `action.js`   | Register and match button click handlers                |
 | `main.js`     | Wires all modules together on `DOMContentLoaded`        |
 
-To point the frontend at a different backend host, edit `BASE_URL` in `styles/js/config.js`.
+Frontend API target options (`styles/js/config.js`):
+
+1. `?api=https://your-api-host` query parameter (highest priority)
+2. `localStorage.API_BASE`
+3. Current page origin (`window.location.origin`) for normal localhost/ngrok use
+4. `http://localhost:8000` only when opened via `file://`
 
 ---
 
@@ -552,9 +491,11 @@ The CLI skips geofencing and the REST layer entirely — it calls the same modul
 
 ## Troubleshooting
 
-**Server exits immediately at startup**
+**Server starts but some models fail at startup**
 
-RetinaFace or CVLFace failed to load — check the `[STARTUP]` output. Usually a missing CUDA library or a `transformers` version mismatch. The server intentionally refuses to start without detection and embedding working.
+Check `[STARTUP]` logs. The API now continues in degraded mode when possible:
+- detector can fall back to OpenCV Haar if RetinaFace is unavailable
+- embedding can fall back if CVLFace dependencies are missing
 
 **"No DB records" even after registering**
 
@@ -562,7 +503,7 @@ The `embedding_mode` of the stored record doesn't match what the query is using.
 
 **Liveness always fails**
 
-- Check `/liveness` directly with a test image to isolate the issue.
+- Check `/v1/faces/liveness` directly with a test image to isolate the issue.
 - Lower `LIVENESS_PASSIVE_SPOOF_THRESHOLD` to 0.30 temporarily to see if scores are just miscalibrated.
 - Check `model_scores` in the response to see which model is dragging the score down.
 - Ensure the face is well-lit and not partially occluded — the quality gate runs before liveness but a near-miss face can still produce bad liveness scores.
