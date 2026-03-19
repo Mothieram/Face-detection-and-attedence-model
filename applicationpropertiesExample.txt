@@ -77,7 +77,6 @@ auto_update.max_sim_to_existing = 0.98
 qdrant.path = your qdrant storage
 qdrant.collection = faces
 
-
 # ------------------------------------------------------------
 # Dynamic scaling tiers
 # Format per tier: min_people, max_people, strategy, template_cap, hnsw_m, hnsw_ef_construct, search_ef

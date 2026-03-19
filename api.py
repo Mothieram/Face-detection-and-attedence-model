@@ -23,6 +23,7 @@ import io
 import sys
 import time
 import os
+import uuid
 import contextlib
 import logging
 from contextlib import asynccontextmanager
@@ -70,12 +71,17 @@ from modules.database     import (
     save_record,
     auto_update_add_template,
     current_tier_info,
-    delete_record,
-    record_exists,
+    delete_record_by_person_id,
     load_db,
 )
 from modules.matcher      import match_face, is_match, match_result_label
 from modules.geotagging   import geotag_event
+from modules.persons_db   import (
+    create_person,
+    delete_person_by_name,
+    get_person_by_id,
+    get_person_by_name,
+)
 
 logger = logging.getLogger("face_api")
 
@@ -392,8 +398,21 @@ def _liveness_check(raw: np.ndarray, face: dict,
     )
 
 
-def _do_auto_update(name: str, score: float, mode: str,
-                    face: dict, embedding: list) -> bool:
+def _resolve_identity_name(person_ref: str) -> str:
+    if not person_ref or person_ref in ("No Match", "No DB records"):
+        return person_ref
+    try:
+        uuid.UUID(person_ref)
+    except ValueError:
+        return person_ref
+    person = get_person_by_id(person_ref)
+    if person:
+        return person["display_name"]
+    return person_ref
+
+
+def _do_auto_update(person_ref: str, score: float, mode: str,
+                    face: dict, embedding: list, display_name: str | None = None) -> bool:
     if not AUTO_UPDATE_ENABLED:
         return False
     threshold = MATCH_THRESHOLDS.get(mode, MATCH_THRESHOLDS.get("cvlface", 0.40))
@@ -401,12 +420,14 @@ def _do_auto_update(name: str, score: float, mode: str,
     high_conf = AUTO_UPDATE_HIGH_CONFIDENCE.get(mode, max(min_auto, threshold))
     if score < min_auto or score >= high_conf:
         return False
+    name_for_payload = display_name or person_ref
     added, _ = auto_update_add_template(
-        name=name,
+        name=name_for_payload,
         mode=mode,
         embedding=embedding,
         bbox=face["bbox"],
         landmarks=face["landmarks"],
+        person_id=person_ref,
     )
     return added
 
@@ -566,11 +587,20 @@ async def register(
 
     **Flow:** decode → preprocess → detect → quality check → liveness → embed → save.
     """
-    if record_exists(name):
+    existing_person = get_person_by_name(name)
+    if existing_person:
         raise HTTPException(
             status_code=409,
             detail=f"'{name}' is already registered. Use DELETE /v1/persons/{name} first to re-register.",
         )
+    try:
+        person = create_person(name)
+    except ValueError:
+        raise HTTPException(status_code=422, detail="Invalid name format.")
+    except RuntimeError as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+    if not person:
+        raise HTTPException(status_code=500, detail="Failed to create person in SQL store.")
 
     image_bytes = await image.read()
     raw = _decode_image(image_bytes)
@@ -631,18 +661,20 @@ async def register(
     embedding, mode = generate_embedding(aligned)
 
     ok = save_record(
-        name,
+        person["display_name"],
         face["bbox"],
         face["landmarks"],
         embedding,
         embedding_mode=mode,
+        person_id=person["person_id"],
     )
     if not ok:
+        delete_person_by_name(name)
         raise HTTPException(status_code=500, detail="Database write failed. Check name format.")
 
     return {
         "success":        True,
-        "name":           name,
+        "name":           person["display_name"],
         "face_id":        face["face_id"],
         "liveness":       liveness_result,
         "geo":            geo,
@@ -746,15 +778,16 @@ async def match(
 
         aligned          = align_face(raw, face["landmarks"], bbox=face["bbox"])
         embedding, mode  = generate_embedding(aligned)
-        name, score      = match_face(embedding, query_mode=mode)
-        matched          = is_match(name)
+        person_ref, score = match_face(embedding, query_mode=mode)
+        matched           = is_match(person_ref)
+        name              = _resolve_identity_name(person_ref)
 
         if matched:
             matched_count += 1
 
         updated = False
         if matched and auto_update:
-            updated = _do_auto_update(name, score, mode, face, embedding)
+            updated = _do_auto_update(person_ref, score, mode, face, embedding, display_name=name)
 
         results.append(MatchResult(
             face_id=face["face_id"],
@@ -836,12 +869,13 @@ async def log_attendance(
 
         aligned          = align_face(raw, face["landmarks"], bbox=face["bbox"])
         embedding, mode  = generate_embedding(aligned)
-        name, score      = match_face(embedding, query_mode=mode)
+        person_ref, score = match_face(embedding, query_mode=mode)
+        name              = _resolve_identity_name(person_ref)
 
-        if is_match(name):
+        if is_match(person_ref):
             if name not in present:
                 present.append(name)
-            _do_auto_update(name, score, mode, face, embedding)
+            _do_auto_update(person_ref, score, mode, face, embedding, display_name=name)
             detail.append({
                 "face_id":        face["face_id"],
                 "status":         "matched",
@@ -922,10 +956,10 @@ def person_get(request: Request, name: str):
     Check whether a person is registered.
     Returns 200 with exists=true/false. Use 404 absence to gate re-registration.
     """
-    exists = record_exists(name)
-    if not exists:
+    person = get_person_by_name(name)
+    if not person:
         raise HTTPException(status_code=404, detail=f"'{name}' not found in database.")
-    return {"name": name, "exists": True}
+    return {"name": person["display_name"], "exists": True}
 
 
 # ═══════════════════════════════════════════════
@@ -939,11 +973,11 @@ def person_delete(request: Request, name: str):
     Delete all templates for a person. Returns **204 No Content** on success.
     Raises 404 if the person is not registered.
     """
-    if not record_exists(name):
+    person = get_person_by_name(name)
+    if not person:
         raise HTTPException(status_code=404, detail=f"'{name}' not found in database.")
-    ok = delete_record(name)
-    if not ok:
-        raise HTTPException(status_code=500, detail="Delete failed.")
+    delete_record_by_person_id(person["person_id"])
+    delete_person_by_name(name)
     return Response(status_code=204)
 
 

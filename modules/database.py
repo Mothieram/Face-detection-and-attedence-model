@@ -92,9 +92,9 @@ def _get_client() -> QdrantClient:
 
 # ── Data Operations ──────────────────────────────────────────────────────
 
-def save_record(name: str, bbox: list, landmarks: dict, embedding: list, 
-                embedding_source: str = "unknown", embedding_mode: str | None = None, 
-                template_type: str = "template") -> bool:
+def save_record(name: str, bbox: list, landmarks: dict, embedding: list,
+                embedding_source: str = "unknown", embedding_mode: str | None = None,
+                template_type: str = "template", person_id: str | None = None) -> bool:
     mode = embedding_mode if embedding_mode is not None else embedding_source
     try:
         display_name, name_key = _validate_name(name)
@@ -102,8 +102,9 @@ def save_record(name: str, bbox: list, landmarks: dict, embedding: list,
         print(f"[DB] {e}")
         return False
 
-    with _get_person_lock(name_key):
-        return _save_record_locked(display_name, name_key, bbox, landmarks, 
+    person_ref = (person_id or "").strip() or name_key
+    with _get_person_lock(person_ref):
+        return _save_record_locked(display_name, name_key, person_ref, bbox, landmarks,
                                    embedding, mode, template_type, True)
 
 def load_db() -> Generator[dict, None, None]:
@@ -136,12 +137,15 @@ def _consolidate(name_key: str, mode: str, templates: list) -> None:
     
     mean_list = mean_vec.tolist()
     best = max(templates, key=lambda t: _cosine_sim(t["embedding"], mean_list))
-    all_points = _scroll_by_name_key(name_key)
+    all_points = _scroll_by_identity(name_key)
     old_ids = [p.id for p in all_points if p.payload.get("embedding_mode") == mode]
 
     meta = templates[0]
+    canonical_name = meta.get("name", name_key)
+    canonical_person_id = meta.get("person_id", name_key)
     base_payload = {
-        "name": name_key, "display_name": meta.get("display_name", name_key),
+        "person_id": canonical_person_id,
+        "name": canonical_name, "display_name": meta.get("display_name", canonical_name),
         "bbox": meta.get("bbox", []), "landmarks": meta.get("landmarks", {}),
         "embedding_mode": mode,
     }
@@ -183,6 +187,8 @@ def _update_mean(name_key: str, mode: str, new_embedding: list, existing: list) 
 
     # Recover display_name and metadata from existing or defaults
     display_name = existing[0].get("display_name", name_key) if existing else name_key
+    canonical_name = existing[0].get("name", name_key) if existing else name_key
+    canonical_person_id = existing[0].get("person_id", name_key) if existing else name_key
     bbox = existing[0].get("bbox", []) if existing else []
     landmarks = existing[0].get("landmarks", {}) if existing else {}
 
@@ -191,7 +197,8 @@ def _update_mean(name_key: str, mode: str, new_embedding: list, existing: list) 
             id=mean_id,
             vector=mean_vec.tolist(),
             payload={
-                "name": name_key,
+                "person_id": canonical_person_id,
+                "name": canonical_name,
                 "display_name": display_name,
                 "bbox": bbox,
                 "landmarks": landmarks,
@@ -202,15 +209,15 @@ def _update_mean(name_key: str, mode: str, new_embedding: list, existing: list) 
     ])
     print(f"[DB] Mean updated for '{name_key}' ({len(all_vecs)} samples)")
 
-def _save_record_locked(display_name, name_key, bbox, landmarks, embedding, 
+def _save_record_locked(display_name, name_key, person_ref, bbox, landmarks, embedding,
                         mode, template_type, warn_if_exists) -> bool:
     client = _get_client()
-    existed = _record_exists_key(name_key)
+    existed = _record_exists_key(person_ref)
     point = PointStruct(
         id=str(uuid.uuid4()),
         vector=[float(v) for v in embedding],
         payload={
-            "name": name_key, "display_name": display_name,
+            "person_id": person_ref, "name": name_key, "display_name": display_name,
             "bbox": [int(v) for v in bbox], "landmarks": landmarks,
             "embedding_mode": mode, "template_type": template_type
         },
@@ -222,24 +229,26 @@ def _save_record_locked(display_name, name_key, bbox, landmarks, embedding,
     except Exception as e:
         print(f"[DB] Save error: {e}"); return False
 
-def auto_update_add_template(name: str, mode: str, embedding: list, 
-                             bbox: list, landmarks: dict) -> tuple[bool, str]:
+def auto_update_add_template(name: str, mode: str, embedding: list,
+                             bbox: list, landmarks: dict, person_id: str | None = None) -> tuple[bool, str]:
     name_key = name.strip().lower()
-    with _get_person_lock(name_key):
+    person_ref = (person_id or "").strip() or name_key
+    with _get_person_lock(person_ref):
         tier = current_tier_info()
-        templates = fetch_templates_for(name_key, mode)
-        
+        templates = fetch_templates_for(person_ref, mode)
+        display_name = templates[0].get("display_name", name) if templates else name
+
         if tier["strategy"] == "mean":
-            _update_mean(name_key, mode, embedding, templates)
+            _update_mean(person_ref, mode, embedding, templates)
             return True, "mean updated"
         
         if len(templates) >= tier["cap"]:
             if tier["strategy"] == "hybrid":
-                _consolidate(name_key, mode, templates)
+                _consolidate(person_ref, mode, templates)
                 return True, "consolidated"
             return False, "at cap"
             
-        return _save_record_locked(name, name_key, bbox, landmarks, embedding, mode, "template", False), "added"
+        return _save_record_locked(display_name, name_key, person_ref, bbox, landmarks, embedding, mode, "template", False), "added"
 
 def record_exists(name: str) -> bool:
     """Public API: check whether a person has at least one stored template."""
@@ -248,6 +257,13 @@ def record_exists(name: str) -> bool:
     except ValueError:
         return False
     return _record_exists_key(name_key)
+
+
+def record_exists_person_id(person_id: str) -> bool:
+    person_ref = (person_id or "").strip()
+    if not person_ref:
+        return False
+    return _record_exists_key(person_ref)
 
 
 def delete_record(name: str) -> bool:
@@ -261,7 +277,7 @@ def delete_record(name: str) -> bool:
         return False
 
     with _get_person_lock(name_key):
-        points = _scroll_by_name_key(name_key, limit=10_000)
+        points = _scroll_by_identity(name_key, limit=10_000)
         if not points:
             return False
 
@@ -270,24 +286,55 @@ def delete_record(name: str) -> bool:
         _adjust_people_count(-1)
         return True
 
-def _record_exists_key(name_key: str) -> bool:
-    return len(_scroll_by_name_key(name_key, limit=1)) > 0
 
-def _scroll_by_name_key(name_key: str, limit: int = 100) -> list:
+def delete_record_by_person_id(person_id: str) -> bool:
+    person_ref = (person_id or "").strip()
+    if not person_ref:
+        return False
+    with _get_person_lock(person_ref):
+        points = _scroll_by_identity(person_ref, limit=10_000)
+        if not points:
+            return False
+        ids = [p.id for p in points]
+        _delete_with_retry(_get_client(), ids)
+        _adjust_people_count(-1)
+        return True
+
+def _record_exists_key(name_key: str) -> bool:
+    return len(_scroll_by_identity(name_key, limit=1)) > 0
+
+def _scroll_by_identity(identity: str, limit: int = 100) -> list:
     client = _get_client()
-    res, _ = client.scroll(
+    by_person_id, _ = client.scroll(
         collection_name=QDRANT_COLLECTION,
-        scroll_filter=Filter(must=[FieldCondition(key="name", match=MatchValue(value=name_key))]),
+        scroll_filter=Filter(must=[FieldCondition(key="person_id", match=MatchValue(value=identity))]),
         limit=limit
     )
-    return list(res)
+    if by_person_id:
+        return list(by_person_id)
+    by_name, _ = client.scroll(
+        collection_name=QDRANT_COLLECTION,
+        scroll_filter=Filter(must=[FieldCondition(key="name", match=MatchValue(value=identity))]),
+        limit=limit
+    )
+    return list(by_name)
 
-def fetch_templates_for(name_key: str, mode: str) -> list[dict]:
+def fetch_templates_for(identity: str, mode: str) -> list[dict]:
     client = _get_client()
     points, _ = client.scroll(
         collection_name=QDRANT_COLLECTION,
         scroll_filter=Filter(must=[
-            FieldCondition(key="name", match=MatchValue(value=name_key)),
+            FieldCondition(key="person_id", match=MatchValue(value=identity)),
+            FieldCondition(key="embedding_mode", match=MatchValue(value=mode)),
+        ]),
+        with_vectors=True, limit=20
+    )
+    if points:
+        return [{"embedding": p.vector, **p.payload} for p in points]
+    points, _ = client.scroll(
+        collection_name=QDRANT_COLLECTION,
+        scroll_filter=Filter(must=[
+            FieldCondition(key="name", match=MatchValue(value=identity)),
             FieldCondition(key="embedding_mode", match=MatchValue(value=mode)),
         ]),
         with_vectors=True, limit=20

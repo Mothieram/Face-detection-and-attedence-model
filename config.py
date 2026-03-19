@@ -169,6 +169,11 @@ AUTO_UPDATE_MAX_SIM_TO_EXISTING = _float("auto_update.max_sim_to_existing", 0.98
 QDRANT_PATH       = _str("qdrant.path",       "./qdrant_storage")
 QDRANT_COLLECTION = _str("qdrant.collection", "faces")
 
+# SQL person registry (PostgreSQL preferred, SQLite fallback)
+SQL_BACKEND      = _str("sql.backend", "sqlite").lower()
+SQL_DATABASE_URL = _str("sql.database_url", "")
+SQL_SQLITE_PATH  = _str("sql.sqlite_path", "./persons.sqlite3")
+
 
 # ─────────────────────────────────────────────
 # Dynamic scaling tiers

@@ -39,7 +39,8 @@ def match_face(query_embedding: list,
         query_mode      : 'cvlface' | 'fallback'
 
     Returns:
-        (name, score) — name is 'No Match' or 'No DB records' on failure
+        (person_ref, score) — person_ref is person_id when available.
+        Falls back to display_name/name for older records.
     """
     client    = _get_client()
     threshold = MATCH_THRESHOLDS[query_mode]
@@ -90,12 +91,16 @@ def match_face(query_embedding: list,
 
     best  = results[0]
     score = float(best.score)
-    name  = str(best.payload.get("display_name") or best.payload.get("name", "Unknown"))
+    person_ref = str(
+        best.payload.get("person_id")
+        or best.payload.get("display_name")
+        or best.payload.get("name", "Unknown")
+    )
 
     if score < threshold:
         return "No Match", score
 
-    return name, score
+    return person_ref, score
 
 
 def cosine_similarity(vec1: list, vec2: list) -> float:

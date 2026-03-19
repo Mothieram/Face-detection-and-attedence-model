@@ -23,6 +23,7 @@ from modules.liveness     import check_liveness
 from modules.embedder     import generate_embedding, is_cvlface_loaded
 from modules.database     import save_record, auto_update_add_template, current_tier_info
 from modules.matcher      import match_face, is_match, match_result_label
+from modules.persons_db   import create_person, get_person_by_id, get_person_by_name
 
 from utils.visualizer import draw_detections, draw_face_count, draw_status_label
 
@@ -185,7 +186,15 @@ def _register(raw: np.ndarray, preprocessed: np.ndarray, faces: list, camera_ind
     if mode == "fallback":
         print("[REGISTER] ⚠ Fallback embedding — load AdaFace for reliable results.")
 
-    save_record(name, face["bbox"], face["landmarks"], embedding, embedding_mode=mode)
+    person = get_person_by_name(name) or create_person(name)
+    save_record(
+        person["display_name"],
+        face["bbox"],
+        face["landmarks"],
+        embedding,
+        embedding_mode=mode,
+        person_id=person["person_id"],
+    )
 
     result = draw_detections(preprocessed.copy(), faces)
     draw_status_label(result, f"Registered: {name}", color=(0, 255, 255))
@@ -222,12 +231,14 @@ def _match(raw: np.ndarray, preprocessed: np.ndarray, faces: list, camera_index:
 
         aligned          = align_face(raw, face["landmarks"], bbox=face["bbox"])
         embedding, mode  = generate_embedding(aligned)
-        name, score      = match_face(embedding, query_mode=mode)
+        person_ref, score = match_face(embedding, query_mode=mode)
+        person = get_person_by_id(person_ref) if is_match(person_ref) else None
+        name = person["display_name"] if person else person_ref
         labels[face["face_id"]] = match_result_label(name, score)
-        status = "MATCHED" if is_match(name) else "NO MATCH"
+        status = "MATCHED" if is_match(person_ref) else "NO MATCH"
         print(f"  {face['face_id']} → {status} | {name} ({score:.3f}) [mode={mode}]")
-        if is_match(name):
-            _auto_update(name, score, mode, face, embedding)
+        if is_match(person_ref):
+            _auto_update(name, score, mode, face, embedding, person_id=person_ref)
 
     result = draw_detections(preprocessed.copy(), faces, labels=labels)
     draw_face_count(result, len(faces))
@@ -332,7 +343,8 @@ def _pick_face(faces: list, display_image: np.ndarray) -> dict | None:
         print("  Invalid input.")
 
 
-def _auto_update(name: str, score: float, mode: str, face: dict, embedding: list) -> None:
+def _auto_update(name: str, score: float, mode: str, face: dict, embedding: list,
+                 person_id: str | None = None) -> None:
     if not AUTO_UPDATE_ENABLED:
         return
 
@@ -349,6 +361,7 @@ def _auto_update(name: str, score: float, mode: str, face: dict, embedding: list
         embedding=embedding,
         bbox=face["bbox"],
         landmarks=face["landmarks"],
+        person_id=person_id,
     )
     if add:
         tier = current_tier_info()
