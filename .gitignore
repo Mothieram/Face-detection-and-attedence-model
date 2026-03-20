@@ -5,7 +5,6 @@ application.properties
 
 # Model weight caches — downloaded automatically at runtime
 .torch_cache/
-weights/
 
 # Databases — contain biometric data, must never be committed
 qdrant_storage/

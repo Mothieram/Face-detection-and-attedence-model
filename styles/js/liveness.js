@@ -1,7 +1,7 @@
 // Lightweight liveness helpers used by action.js.
 // Keeps UI consistent and delegates final checks to backend /v1/faces/liveness.
 
-import { apiFetch, extractErrorMessage } from "./api.js";
+import { apiFetch, formatError } from "./api.js";
 import {
   captureFrameBlob,
   getLargestLiveFace,
@@ -48,7 +48,7 @@ export async function runPassiveLivenessCheck(imageBlob) {
     return {
       passed: false,
       score: 0,
-      reason: extractErrorMessage(payload, r.status),
+      reason: formatError(payload, r.status),
     };
   }
   return {

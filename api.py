@@ -42,11 +42,12 @@ from fastapi.responses import JSONResponse, FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
 from fastapi.staticfiles import StaticFiles
+from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel
 from typing import Optional
 
-from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi import Limiter
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 
@@ -73,7 +74,7 @@ from modules.database     import (
     delete_record_by_person_id,
     load_db,
 )
-from modules.matcher      import match_face, is_match
+from modules.matcher      import match_face, is_match, match_result_label
 from modules.geotagging   import geotag_event
 from modules.persons_db   import (
     create_person,
@@ -102,9 +103,9 @@ async def require_api_key(api_key: Optional[str] = Security(_api_key_header)) ->
     if not API_AUTH_ENABLED:
         return
     if not api_key:
-        raise HTTPException(status_code=401, detail="Missing API key. Send header: X-API-Key")
+        raise HTTPException(status_code=401, detail={"error":"MISSING_API_KEY","message":"No API key provided. Add header: X-API-Key: <your_key>","field":"X-API-Key","code":"MISSING_API_KEY"})
     if api_key not in _API_KEYS_SET:
-        raise HTTPException(status_code=403, detail="Invalid API key.")
+        raise HTTPException(status_code=403, detail={"error":"INVALID_API_KEY","message":"The provided API key is not recognised. Check your X-API-Key header value.","field":"X-API-Key","code":"INVALID_API_KEY"})
 
 
 # ─────────────────────────────────────────────
@@ -118,6 +119,8 @@ async def lifespan(app: FastAPI):
 
 
 def _startup_load_models() -> None:
+    failures = []
+
     print("[STARTUP] Loading RetinaFace detector...", flush=True)
     try:
         model = _get_retinaface_model()
@@ -157,6 +160,11 @@ def _startup_load_models() -> None:
     except Exception as exc:
         print(f"[STARTUP] [WARN] Liveness load error: {exc}", flush=True)
 
+    if failures:
+        print("\n[STARTUP] [WARN] Some components failed; server running in degraded mode:", flush=True)
+        for f in failures:
+            print(f"  - {f}", flush=True)
+
     print("[STARTUP] All models loaded — server ready.\n", flush=True)
 
 
@@ -177,7 +185,6 @@ app = FastAPI(
 )
 
 app.state.limiter = limiter
-app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 app.mount("/styles", StaticFiles(directory=os.path.join(_BASE_DIR, "styles")), name="styles")
@@ -226,31 +233,101 @@ app.add_middleware(
 
 
 # ─────────────────────────────────────────────
-# Consistent error handler
-# All errors return: {"error": CODE, "message": "...", "detail": ...}
+# Error response helpers
+#
+# Every error returns the same envelope:
+# {
+#   "error"  : machine-readable error type  (e.g. "FACE_NOT_DETECTED")
+#   "message": human-readable explanation   (actionable, not generic)
+#   "field"  : which field caused the error (null when not field-specific)
+#   "code"   : stable error code string     (same as "error", for clients)
+# }
 # ─────────────────────────────────────────────
 
-ERROR_CODES = {
-    400: "BAD_REQUEST",
-    401: "UNAUTHORIZED",
-    403: "FORBIDDEN",
-    404: "NOT_FOUND",
-    409: "CONFLICT",
-    422: "UNPROCESSABLE",
-    429: "RATE_LIMITED",
-    500: "INTERNAL_ERROR",
-}
-
-@app.exception_handler(StarletteHTTPException)
-async def unified_http_exception_handler(request: Request, exc: StarletteHTTPException):
-    code = ERROR_CODES.get(exc.status_code, "ERROR")
+def _error_response(
+    status_code: int,
+    error: str,
+    message: str,
+    field: str | None = None,
+) -> JSONResponse:
+    """Build the standard error envelope used by all exception handlers."""
     return JSONResponse(
-        status_code=exc.status_code,
+        status_code=status_code,
         content={
-            "error":   code,
-            "message": str(exc.detail),
-            "detail":  None,
+            "error":   error,
+            "message": message,
+            "field":   field,
+            "code":    error,          # duplicate of error — keeps parity with the article schema
         },
+    )
+
+
+# ── HTTP exceptions raised by our own code ───────────────────────────────
+# Every raise HTTPException(...) goes through here.
+@app.exception_handler(StarletteHTTPException)
+async def http_exception_handler(request: Request, exc: StarletteHTTPException):
+    # exc.detail is either a plain string or a dict we built with {error, message, field}
+    if isinstance(exc.detail, dict):
+        return _error_response(
+            status_code=exc.status_code,
+            error=exc.detail.get("error", "ERROR"),
+            message=exc.detail.get("message", ""),
+            field=exc.detail.get("field"),
+        )
+    # Plain string detail — derive error code from status code
+    _STATUS_CODES = {
+        400: "BAD_REQUEST",   401: "UNAUTHORIZED",  403: "FORBIDDEN",
+        404: "NOT_FOUND",     409: "CONFLICT",       422: "UNPROCESSABLE",
+        429: "RATE_LIMITED",  500: "INTERNAL_ERROR",
+    }
+    return _error_response(
+        status_code=exc.status_code,
+        error=_STATUS_CODES.get(exc.status_code, "ERROR"),
+        message=str(exc.detail),
+    )
+
+
+# ── Pydantic / FastAPI validation errors (wrong type, missing field) ──────
+# These are NOT StarletteHTTPExceptions — they need their own handler.
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    errors = exc.errors()
+    # Pull the first error's field and reason to surface in the top-level message
+    first = errors[0] if errors else {}
+    loc   = first.get("loc", [])
+    # loc looks like ("body", "name") — skip the "body" prefix
+    field = str(loc[-1]) if len(loc) > 1 else (str(loc[0]) if loc else None)
+    msg   = first.get("msg", "Validation failed")
+    return _error_response(
+        status_code=422,
+        error="VALIDATION_ERROR",
+        message=f"Invalid value for '{field}': {msg}" if field else msg,
+        field=field,
+    )
+
+
+# ── Rate limit exceeded ───────────────────────────────────────────────────
+# slowapi's default handler returns plain text — we override with our envelope.
+@app.exception_handler(RateLimitExceeded)
+async def rate_limit_handler(request: Request, exc: RateLimitExceeded):
+    retry = getattr(exc, "retry_after", None)
+    msg = (
+        f"Rate limit exceeded. You can retry after {retry} seconds."
+        if retry else
+        "Rate limit exceeded. Please slow down and retry shortly."
+    )
+    return _error_response(status_code=429, error="RATE_LIMITED", message=msg)
+
+
+# ── Unhandled Python exceptions → clean 500 ───────────────────────────────
+# Prevents raw tracebacks leaking to the client if something unexpected crashes.
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    logger.error("Unhandled exception on %s %s: %s", request.method, request.url.path, exc, exc_info=True)
+    return _error_response(
+        status_code=500,
+        error="INTERNAL_ERROR",
+        message="An unexpected server error occurred. The issue has been logged.",
     )
 
 
@@ -350,10 +427,7 @@ def _decode_image(file_bytes: bytes) -> np.ndarray:
     arr = np.frombuffer(file_bytes, dtype=np.uint8)
     img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
     if img is None:
-        raise HTTPException(
-            status_code=400,
-            detail="Cannot decode image. Send a valid JPEG or PNG.",
-        )
+        raise HTTPException(status_code=400, detail={"error":"INVALID_IMAGE","message":"Cannot decode the uploaded file. Send a valid JPEG or PNG image in the 'image' field.","field":"image","code":"INVALID_IMAGE"})
     return img
 
 
@@ -443,10 +517,7 @@ async def _resolve_geo(
     )
     geo_dict = geo.to_dict()
     if GEOFENCE_ENFORCE and not geo.geofence_passed:
-        raise HTTPException(
-            status_code=403,
-            detail=f"Geofence failed: {geo.geofence_reason}",
-        )
+        raise HTTPException(status_code=403, detail={"error":"GEOFENCE_DENIED","message":f"Your location is outside the allowed zone: {geo.geofence_reason}. Move within the designated area and try again.","field":"lat","code":"GEOFENCE_DENIED"})
     return geo_dict
 
 
@@ -541,7 +612,7 @@ async def liveness_check(
     _, faces = _run_pipeline(raw)
 
     if not faces:
-        raise HTTPException(status_code=422, detail="No face detected.")
+        raise HTTPException(status_code=422, detail={"error":"NO_FACE_DETECTED","message":"No face was detected in the image. Ensure the face is clearly visible, well-lit, and at least 90×90 px in the frame.","field":"image","code":"NO_FACE_DETECTED"})
 
     face = faces[0]
     lv   = _liveness_check(raw, face, camera_index=camera_index, skip_active=passive_only)
@@ -581,18 +652,20 @@ async def register(
     """
     existing_person = get_person_by_name(name)
     if existing_person:
-        raise HTTPException(
-            status_code=409,
-            detail=f"'{name}' is already registered. Use DELETE /v1/persons/{name} first to re-register.",
-        )
+        raise HTTPException(status_code=409, detail={
+            "error":   "PERSON_ALREADY_EXISTS",
+            "message": f"'{name}' is already registered. To replace them, call DELETE /v1/persons/{name} first, then register again.",
+            "field":   "name",
+            "code":    "PERSON_ALREADY_EXISTS",
+        })
     try:
         person = create_person(name)
     except ValueError:
-        raise HTTPException(status_code=422, detail="Invalid name format.")
+        raise HTTPException(status_code=422, detail={"error":"INVALID_NAME","message":"Name contains invalid characters. Use only letters, digits, spaces, hyphens, underscores, and apostrophes (max 64 characters).","field":"name","code":"INVALID_NAME"})
     except RuntimeError as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise HTTPException(status_code=500, detail={"error":"DATABASE_ERROR","message":"Failed to initialise the person record in the SQL store. Check your SQL_DATABASE_URL configuration.","field":None,"code":"DATABASE_ERROR"})
     if not person:
-        raise HTTPException(status_code=500, detail="Failed to create person in SQL store.")
+        raise HTTPException(status_code=500, detail={"error":"DATABASE_ERROR","message":"Failed to create the person record. The SQL store may be unavailable — check server logs for details.","field":None,"code":"DATABASE_ERROR"})
 
     image_bytes = await image.read()
     raw = _decode_image(image_bytes)
@@ -606,12 +679,12 @@ async def register(
     preprocessed, faces = _run_pipeline(raw)
 
     if not faces:
-        raise HTTPException(status_code=422, detail="No face detected in image.")
+        raise HTTPException(status_code=422, detail={"error":"NO_FACE_DETECTED","message":"No face was detected in the uploaded image. Ensure the face is clearly visible, well-lit, not blurred, and occupies a reasonable portion of the frame.","field":"image","code":"NO_FACE_DETECTED"})
 
     passed_faces, rejected = _quality_filter(raw, faces)
     if not passed_faces:
         detail = "; ".join(r["reason"] for r in rejected)
-        raise HTTPException(status_code=422, detail=f"All faces failed quality check: {detail}")
+        raise HTTPException(status_code=422, detail={"error":"FACE_QUALITY_FAILED","message":f"All detected faces failed the quality check: {detail}. Ensure the face is at least 90×90 px, not blurry, and looking roughly forward.","field":"image","code":"FACE_QUALITY_FAILED"})
 
     if face_index >= len(passed_faces):
         face_index = 0
@@ -632,19 +705,23 @@ async def register(
             model_scores=liveness_raw.get("model_scores"),
         )
         if not liveness_result.passed:
-            # Return 403 but with consistent error envelope
+            # Liveness failed — return 403 with the standard error envelope.
+            # Per-model scores are included so the developer can see which
+            # model triggered the rejection without digging through server logs.
             return JSONResponse(
                 status_code=403,
                 content={
                     "error":   "LIVENESS_FAILED",
-                    "message": f"Liveness failed: {liveness_result.reason}",
+                    "message": (
+                        f"Liveness check failed: {liveness_result.reason}. "
+                        "Ensure the face is real, well-lit, and looking at the camera."
+                    ),
+                    "field":   "image",
+                    "code":    "LIVENESS_FAILED",
                     "detail":  {
-                        "success":        False,
-                        "name":           name,
-                        "face_id":        face["face_id"],
-                        "liveness":       liveness_result.dict(),
-                        "geo":            geo,
-                        "embedding_mode": "",
+                        "face_id":  face["face_id"],
+                        "liveness": liveness_result.dict(),
+                        "geo":      geo,
                     },
                 },
             )
@@ -662,7 +739,7 @@ async def register(
     )
     if not ok:
         delete_person_by_name(name)
-        raise HTTPException(status_code=500, detail="Database write failed. Check name format.")
+        raise HTTPException(status_code=500, detail={"error":"EMBEDDING_SAVE_FAILED","message":"Failed to save the face embedding to the vector database. The person record has been rolled back. Check Qdrant storage availability.","field":None,"code":"EMBEDDING_SAVE_FAILED"})
 
     return {
         "success":        True,
@@ -950,7 +1027,7 @@ def person_get(request: Request, name: str):
     """
     person = get_person_by_name(name)
     if not person:
-        raise HTTPException(status_code=404, detail=f"'{name}' not found in database.")
+        raise HTTPException(status_code=404, detail={"error":"PERSON_NOT_FOUND","message":f"'{name}' is not registered. Check the spelling or call GET /v1/persons to list all registered names.","field":"name","code":"PERSON_NOT_FOUND"})
     return {"name": person["display_name"], "exists": True}
 
 
@@ -967,7 +1044,7 @@ def person_delete(request: Request, name: str):
     """
     person = get_person_by_name(name)
     if not person:
-        raise HTTPException(status_code=404, detail=f"'{name}' not found in database.")
+        raise HTTPException(status_code=404, detail={"error":"PERSON_NOT_FOUND","message":f"'{name}' is not registered. Check the spelling or call GET /v1/persons to list all registered names.","field":"name","code":"PERSON_NOT_FOUND"})
     delete_record_by_person_id(person["person_id"])
     delete_person_by_name(name)
     return Response(status_code=204)

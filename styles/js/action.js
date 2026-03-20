@@ -1,7 +1,7 @@
 // ── actions.js ────────────────────────────────────────
 // High-level button actions: capture + match, capture + register.
 
-import { apiFetch, extractErrorMessage } from "./api.js";
+import { apiFetch, extractErrorMessage, formatError } from "./api.js";
 import { PASSIVE_REAL_THRESHOLD } from "./config.js";
 import { toast } from "./toast.js";
 import { stream, captureFrameBlob } from "./camera.js";
@@ -120,7 +120,7 @@ export async function captureAndMatch() {
     const r = await apiFetch("/faces/matches", { method: "POST", body: fd });
     if (!r.ok) {
       const payload = await r.json().catch(() => null);
-      throw new Error(extractErrorMessage(payload, r.status));
+      throw new Error(formatError(payload, r.status));
     }
     renderResults(await r.json());
   } catch (e) {
@@ -184,14 +184,13 @@ export async function captureAndRegister() {
     const payload = await r.json().catch(() => ({}));
 
     if (!r.ok) {
-      // Handle liveness failure (403) — payload is in detail.liveness
-      if (r.status === 403 && payload.detail?.liveness) {
-        const lv = payload.detail.liveness;
-        throw new Error(
-          `Liveness failed: ${lv.reason} (score ${Number(lv.score).toFixed(2)})`,
-        );
+      // 403 LIVENESS_FAILED — detail.liveness has the per-model breakdown
+      if (r.status === 403 && payload.code === "LIVENESS_FAILED") {
+        const lv = payload.detail?.liveness;
+        const score = lv ? ` (score ${Number(lv.score).toFixed(2)})` : "";
+        throw new Error(`${payload.message}${score}`);
       }
-      throw new Error(extractErrorMessage(payload, r.status));
+      throw new Error(formatError(payload, r.status));
     }
 
     // 201 Created — success
