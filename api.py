@@ -42,7 +42,6 @@ from fastapi.responses import JSONResponse, FileResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.security import APIKeyHeader
 from fastapi.staticfiles import StaticFiles
-from fastapi.exception_handlers import http_exception_handler
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from pydantic import BaseModel
 from typing import Optional
@@ -74,7 +73,7 @@ from modules.database     import (
     delete_record_by_person_id,
     load_db,
 )
-from modules.matcher      import match_face, is_match, match_result_label
+from modules.matcher      import match_face, is_match
 from modules.geotagging   import geotag_event
 from modules.persons_db   import (
     create_person,
@@ -119,8 +118,6 @@ async def lifespan(app: FastAPI):
 
 
 def _startup_load_models() -> None:
-    failures = []
-
     print("[STARTUP] Loading RetinaFace detector...", flush=True)
     try:
         model = _get_retinaface_model()
@@ -159,11 +156,6 @@ def _startup_load_models() -> None:
             print("[STARTUP] [WARN] All liveness models unavailable", flush=True)
     except Exception as exc:
         print(f"[STARTUP] [WARN] Liveness load error: {exc}", flush=True)
-
-    if failures:
-        print("\n[STARTUP] [WARN] Some components failed; server running in degraded mode:", flush=True)
-        for f in failures:
-            print(f"  - {f}", flush=True)
 
     print("[STARTUP] All models loaded — server ready.\n", flush=True)
 

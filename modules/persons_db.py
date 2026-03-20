@@ -33,6 +33,33 @@ def _is_postgres() -> bool:
     return SQL_DATABASE_URL.lower().startswith("postgres")
 
 
+# Computed once at module load — avoids re-evaluating config strings on every DB call
+_POSTGRES: bool = _is_postgres()
+
+# SQLite singleton connection (WAL mode, thread-safe).
+# Avoids opening/closing a new connection on every DB call.
+# Only used when _POSTGRES is False.
+_sqlite_conn: Optional[sqlite3.Connection] = None
+_sqlite_conn_lock = threading.Lock()
+
+
+def _get_sqlite() -> sqlite3.Connection:
+    """Return the module-level SQLite connection, creating it if needed."""
+    global _sqlite_conn
+    if _sqlite_conn is not None:
+        return _sqlite_conn
+    with _sqlite_conn_lock:
+        if _sqlite_conn is None:
+            os.makedirs(os.path.dirname(os.path.abspath(SQL_SQLITE_PATH)), exist_ok=True)
+            conn = sqlite3.connect(SQL_SQLITE_PATH, check_same_thread=False)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute("PRAGMA synchronous=NORMAL")
+            _sqlite_conn = conn
+    return _sqlite_conn
+
+
+# ── Schema ────────────────────────────────────────────────────────────────
+
 def _ensure_schema() -> None:
     global _initialized
     if _initialized:
@@ -40,7 +67,7 @@ def _ensure_schema() -> None:
     with _init_lock:
         if _initialized:
             return
-        if _is_postgres():
+        if _POSTGRES:
             _ensure_schema_postgres()
         else:
             _ensure_schema_sqlite()
@@ -67,22 +94,18 @@ def _ensure_schema_postgres() -> None:
 
 
 def _ensure_schema_sqlite() -> None:
-    os.makedirs(os.path.dirname(os.path.abspath(SQL_SQLITE_PATH)), exist_ok=True)
-    conn = sqlite3.connect(SQL_SQLITE_PATH)
-    try:
-        conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS persons (
-                person_id TEXT PRIMARY KEY,
-                name_key TEXT UNIQUE NOT NULL,
-                display_name TEXT NOT NULL,
-                created_at TEXT NOT NULL DEFAULT (datetime('now'))
-            )
-            """
+    conn = _get_sqlite()
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS persons (
+            person_id TEXT PRIMARY KEY,
+            name_key TEXT UNIQUE NOT NULL,
+            display_name TEXT NOT NULL,
+            created_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
-        conn.commit()
-    finally:
-        conn.close()
+        """
+    )
+    conn.commit()
 
 
 def _pg_connect():
@@ -99,15 +122,19 @@ def _pg_connect():
     return psycopg2.connect(SQL_DATABASE_URL)
 
 
-def create_person(display_name: str) -> dict:
+# ── Public API ────────────────────────────────────────────────────────────
+
+def create_person(display_name: str) -> Optional[dict]:
     _ensure_schema()
     display_name, name_key = _normalize_name(display_name)
+
     existing = get_person_by_name(display_name)
     if existing:
         return existing
 
     person_id = str(uuid.uuid4())
-    if _is_postgres():
+
+    if _POSTGRES:
         conn = _pg_connect()
         try:
             with conn.cursor() as cur:
@@ -123,55 +150,50 @@ def create_person(display_name: str) -> dict:
         finally:
             conn.close()
     else:
-        conn = sqlite3.connect(SQL_SQLITE_PATH)
-        try:
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO persons (person_id, name_key, display_name)
-                VALUES (?, ?, ?)
-                """,
-                (person_id, name_key, display_name),
-            )
-            conn.commit()
-        finally:
-            conn.close()
+        conn = _get_sqlite()
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO persons (person_id, name_key, display_name)
+            VALUES (?, ?, ?)
+            """,
+            (person_id, name_key, display_name),
+        )
+        conn.commit()
+
     return get_person_by_name(display_name)
 
 
 def get_person_by_name(name: str) -> Optional[dict]:
     _ensure_schema()
     _, name_key = _normalize_name(name)
-    if _is_postgres():
+
+    if _POSTGRES:
         conn = _pg_connect()
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT person_id::text, name_key, display_name, created_at::text FROM persons WHERE name_key=%s",
+                    "SELECT person_id::text, name_key, display_name, created_at::text"
+                    " FROM persons WHERE name_key=%s",
                     (name_key,),
                 )
                 row = cur.fetchone()
         finally:
             conn.close()
-        if not row:
-            return None
-        return {
-            "person_id": row[0],
-            "name_key": row[1],
-            "display_name": row[2],
-            "created_at": row[3],
-        }
-
-    conn = sqlite3.connect(SQL_SQLITE_PATH)
-    try:
+    else:
+        conn = _get_sqlite()
         row = conn.execute(
             "SELECT person_id, name_key, display_name, created_at FROM persons WHERE name_key=?",
             (name_key,),
         ).fetchone()
-    finally:
-        conn.close()
+
     if not row:
         return None
-    return {"person_id": row[0], "name_key": row[1], "display_name": row[2], "created_at": row[3]}
+    return {
+        "person_id":    row[0],
+        "name_key":     row[1],
+        "display_name": row[2],
+        "created_at":   row[3],
+    }
 
 
 def get_person_by_id(person_id: str) -> Optional[dict]:
@@ -183,43 +205,41 @@ def get_person_by_id(person_id: str) -> Optional[dict]:
         uuid.UUID(pid)
     except ValueError:
         return None
-    if _is_postgres():
+
+    if _POSTGRES:
         conn = _pg_connect()
         try:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT person_id::text, name_key, display_name, created_at::text FROM persons WHERE person_id=%s::uuid",
+                    "SELECT person_id::text, name_key, display_name, created_at::text"
+                    " FROM persons WHERE person_id=%s::uuid",
                     (pid,),
                 )
                 row = cur.fetchone()
         finally:
             conn.close()
-        if not row:
-            return None
-        return {
-            "person_id": row[0],
-            "name_key": row[1],
-            "display_name": row[2],
-            "created_at": row[3],
-        }
-
-    conn = sqlite3.connect(SQL_SQLITE_PATH)
-    try:
+    else:
+        conn = _get_sqlite()
         row = conn.execute(
             "SELECT person_id, name_key, display_name, created_at FROM persons WHERE person_id=?",
             (pid,),
         ).fetchone()
-    finally:
-        conn.close()
+
     if not row:
         return None
-    return {"person_id": row[0], "name_key": row[1], "display_name": row[2], "created_at": row[3]}
+    return {
+        "person_id":    row[0],
+        "name_key":     row[1],
+        "display_name": row[2],
+        "created_at":   row[3],
+    }
 
 
 def delete_person_by_name(name: str) -> bool:
     _ensure_schema()
     _, name_key = _normalize_name(name)
-    if _is_postgres():
+
+    if _POSTGRES:
         conn = _pg_connect()
         try:
             with conn.cursor() as cur:
@@ -229,17 +249,14 @@ def delete_person_by_name(name: str) -> bool:
             return deleted
         finally:
             conn.close()
-
-    conn = sqlite3.connect(SQL_SQLITE_PATH)
-    try:
+    else:
+        conn = _get_sqlite()
         cur = conn.execute("DELETE FROM persons WHERE name_key=?", (name_key,))
         conn.commit()
         return cur.rowcount > 0
-    finally:
-        conn.close()
 
 
-def upsert_person(person_id: str, display_name: str) -> dict:
+def upsert_person(person_id: str, display_name: str) -> Optional[dict]:
     """
     Ensure a person row exists with a specific person_id and display_name.
     If an equivalent row already exists by name or id, it is reused.
@@ -260,7 +277,7 @@ def upsert_person(person_id: str, display_name: str) -> dict:
     if by_id:
         return by_id
 
-    if _is_postgres():
+    if _POSTGRES:
         conn = _pg_connect()
         try:
             with conn.cursor() as cur:
@@ -277,17 +294,14 @@ def upsert_person(person_id: str, display_name: str) -> dict:
         finally:
             conn.close()
     else:
-        conn = sqlite3.connect(SQL_SQLITE_PATH)
-        try:
-            conn.execute(
-                """
-                INSERT OR IGNORE INTO persons (person_id, name_key, display_name)
-                VALUES (?, ?, ?)
-                """,
-                (pid, name_key, display_name),
-            )
-            conn.commit()
-        finally:
-            conn.close()
+        conn = _get_sqlite()
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO persons (person_id, name_key, display_name)
+            VALUES (?, ?, ?)
+            """,
+            (pid, name_key, display_name),
+        )
+        conn.commit()
 
     return get_person_by_id(pid) or get_person_by_name(display_name)

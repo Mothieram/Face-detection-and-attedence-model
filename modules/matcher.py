@@ -11,7 +11,6 @@ MATCH_THRESHOLDS must define both 'cvlface' and 'fallback' keys.
 Missing keys raise a KeyError at import time (fail fast).
 """
 
-import numpy as np
 from qdrant_client.models import Filter, FieldCondition, MatchValue
 
 from config import MATCH_THRESHOLDS, QDRANT_COLLECTION
@@ -102,13 +101,6 @@ def match_face(query_embedding: list,
 
     return person_ref, score
 
-
-def cosine_similarity(vec1: list, vec2: list) -> float:
-    """Exact cosine similarity — used only by _auto_update template dedup."""
-    a = np.array(vec1, dtype=np.float32)
-    b = np.array(vec2, dtype=np.float32)
-    d = np.linalg.norm(a) * np.linalg.norm(b)
-    return float(np.dot(a, b) / d) if d > 0 else 0.0
 
 
 def match_result_label(name: str, score: float) -> str:
