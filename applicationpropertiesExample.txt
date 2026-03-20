@@ -148,6 +148,9 @@ api.auth.enabled = true #turn True to implement api authentication
 # CHANGE THIS — do not keep the default key in production
 api.auth.keys = # example use for the api key protection
 
+# Read-only keys — match/detect/list/status only, cannot register or delete
+# Leave blank if you don't need a readonly tier
+api.auth.keys_readonly = 
 
 # ------------------------------------------------------------
 # Geotagging
