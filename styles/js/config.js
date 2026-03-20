@@ -25,7 +25,15 @@ export const API = normalizeBaseUrl(
 // All endpoints are under /v1/
 export const API_V1 = `${API}/v1`;
 
-export const API_KEY = "developer_key";
+// API key — read from ?key= URL param or localStorage.
+// First visit: open https://your-ngrok-url/?key=YOUR_KEY
+// After that: key is remembered in localStorage automatically.
+const _keyFromQuery = new URLSearchParams(window.location.search).get("key");
+const _keyFromStorage = window.localStorage.getItem("API_KEY");
+export const API_KEY = _keyFromQuery || _keyFromStorage || "";
+
+// Save key from URL to localStorage so it persists across refreshes
+if (_keyFromQuery) window.localStorage.setItem("API_KEY", _keyFromQuery);
 
 // Passive liveness threshold alignment (real score >= threshold => skip active challenge)
 export const PASSIVE_REAL_THRESHOLD = 0.55;

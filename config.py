@@ -297,6 +297,14 @@ API_KEYS = [
     if k.strip()
 ]
 
+# Read-only keys — can call match/status/detect/list but NOT register or delete.
+# Set via env var API_KEYS_READONLY or application.properties api.auth.keys_readonly
+API_KEYS_READONLY = [
+    k.strip()
+    for k in os.getenv("API_KEYS_READONLY", _str("api.auth.keys_readonly", "")).split(",")
+    if k.strip()
+]
+
 
 # ─────────────────────────────────────────────
 # Geotagging

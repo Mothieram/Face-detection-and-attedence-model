@@ -1,27 +1,44 @@
-retinaface-pytorch
-opencv-python
-onnxruntime-gpu
-numpy
-torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
-albumentations
-iglovikov-helper-functions
-pillow
+# ── Core ML ──────────────────────────────────────────────────────────────
+retinaface-pytorch==0.0.8
+opencv-python==4.10.0.84
+onnxruntime-gpu==1.19.2
+numpy==1.26.4
+
+# PyTorch — CUDA 12.1 build. For CPU-only remove --index-url line and use:
+#   torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0
+torch==2.4.0 torchvision==0.19.0 torchaudio==2.4.0 --index-url https://download.pytorch.org/whl/cu121
+
+albumentations==1.4.15
+iglovikov-helper-functions==0.0.14
+pillow==10.4.0
+
+# ── CVLFace / AdaFace embedder ────────────────────────────────────────────
 transformers==4.57.6
 huggingface_hub==0.36.2
-omegaconf
-hydra-core
-timm
-fvcore
-iopath
-yacs
-qdrant-client
-psycopg2-binary
-fastapi
-slowapi
-uvicorn
-python-multipart
-geopy 
-shapely 
-piexif timezonefinder 
-cachetools
-geopy[aiohttp]
+omegaconf==2.3.0
+hydra-core==1.3.2
+timm==1.0.9
+fvcore==0.1.5.post20221221
+iopath==0.1.10
+yacs==0.1.8
+
+# ── Vector DB ────────────────────────────────────────────────────────────
+qdrant-client==1.11.1
+
+# ── SQL person registry ──────────────────────────────────────────────────
+psycopg2-binary==2.9.9
+
+# ── API server ───────────────────────────────────────────────────────────
+fastapi==0.115.4
+slowapi==0.1.9
+uvicorn[standard]==0.31.1
+python-multipart==0.0.12
+gunicorn==23.0.0
+
+# ── Geo ──────────────────────────────────────────────────────────────────
+geopy==2.4.1
+geopy[aiohttp]==2.4.1
+shapely==2.0.6
+piexif==1.1.3
+timezonefinder==6.5.2
+cachetools==5.5.0

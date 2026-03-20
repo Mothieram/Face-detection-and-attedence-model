@@ -144,9 +144,9 @@ display.landmark_color.mouth_left  = 255, 0, 0
 # Env vars API_AUTH_ENABLED and API_KEYS override these values.
 # ------------------------------------------------------------
 
-api.auth.enabled = False #turn True to implement api authentication  
+api.auth.enabled = true #turn True to implement api authentication  
 # CHANGE THIS — do not keep the default key in production
-api.auth.keys = developer_key # example use for the api key protection
+api.auth.keys = # example use for the api key protection
 
 
 # ------------------------------------------------------------

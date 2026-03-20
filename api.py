@@ -26,6 +26,7 @@ import os
 import uuid
 import contextlib
 import logging
+import logging.handlers
 from contextlib import asynccontextmanager
 
 # Keep Torch model cache inside project when TORCH_HOME is not predefined.
@@ -60,6 +61,7 @@ from config import (
     LIVENESS_ACTIVE_ENABLED,
     API_AUTH_ENABLED,
     API_KEYS,
+    API_KEYS_READONLY,
     GEOFENCE_ENFORCE,
 )
 from modules.preprocessor import preprocess_image
@@ -74,7 +76,7 @@ from modules.database     import (
     delete_record_by_person_id,
     load_db,
 )
-from modules.matcher      import match_face, is_match, match_result_label
+from modules.matcher      import match_face, is_match
 from modules.geotagging   import geotag_event
 from modules.persons_db   import (
     create_person,
@@ -83,7 +85,58 @@ from modules.persons_db   import (
     get_person_by_name,
 )
 
-logger = logging.getLogger("face_api")
+# ─────────────────────────────────────────────
+# Logging — stdout + rotating file (10 MB × 5 backups)
+# ─────────────────────────────────────────────
+def _setup_logging() -> logging.Logger:
+    fmt = logging.Formatter(
+        "%(asctime)s %(levelname)-8s %(name)s  %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    log = logging.getLogger("face_api")
+    log.setLevel(logging.INFO)
+    if not log.handlers:
+        # Console
+        sh = logging.StreamHandler()
+        sh.setFormatter(fmt)
+        log.addHandler(sh)
+        # Rotating file — sits next to api.py
+        _log_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "face_api.log")
+        fh = logging.handlers.RotatingFileHandler(
+            _log_path, maxBytes=10_000_000, backupCount=5, encoding="utf-8"
+        )
+        fh.setFormatter(fmt)
+        log.addHandler(fh)
+    return log
+
+logger = _setup_logging()
+
+# ─────────────────────────────────────────────
+# Attendance duplicate prevention
+# Tracks last-seen timestamp per person per session.
+# Same person cannot be counted twice within ATTENDANCE_COOLDOWN_SEC.
+# ─────────────────────────────────────────────
+import threading as _threading
+
+_attendance_lock  = _threading.Lock()
+_attendance_log: dict[str, float] = {}   # person_name → last_logged unix timestamp
+ATTENDANCE_COOLDOWN_SEC = 1800            # 30 minutes — configurable here
+
+def _can_log_attendance(name: str) -> bool:
+    """Returns True if enough time has passed since this person was last logged."""
+    now = time.time()
+    with _attendance_lock:
+        last = _attendance_log.get(name, 0.0)
+        if now - last >= ATTENDANCE_COOLDOWN_SEC:
+            _attendance_log[name] = now
+            return True
+        return False
+
+def _clear_attendance_log() -> None:
+    """Call at the start of a new attendance session to reset all cooldowns."""
+    with _attendance_lock:
+        _attendance_log.clear()
+
 
 # ─────────────────────────────────────────────
 # Rate limiter
@@ -95,17 +148,50 @@ limiter = Limiter(key_func=get_remote_address, default_limits=["200/minute"])
 # Auth
 # ─────────────────────────────────────────────
 
-_API_KEYS_SET = set(API_KEYS)
+# ─────────────────────────────────────────────
+# RBAC — two key tiers
+#
+# API_KEYS       → admin keys: full access (register, delete, match, attend)
+# API_KEYS_READONLY → read-only keys: status, detect, liveness, list, match only
+#                    Cannot register or delete persons.
+#
+# Set via application.properties or environment variables:
+#   api.auth.keys          = admin_key_1, admin_key_2
+#   api.auth.keys_readonly = readonly_key_1
+# ─────────────────────────────────────────────
+
+_API_KEYS_ADMIN    = set(API_KEYS)
+_API_KEYS_READONLY = set(API_KEYS_READONLY)
+_API_KEYS_ALL      = _API_KEYS_ADMIN | _API_KEYS_READONLY
+
 _api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
 
 
+def _get_api_key(api_key: Optional[str] = Security(_api_key_header)) -> Optional[str]:
+    """Extract and validate the API key — returns the key string or None."""
+    return api_key
+
+
 async def require_api_key(api_key: Optional[str] = Security(_api_key_header)) -> None:
+    """Dependency: any valid key (admin or readonly) is accepted."""
     if not API_AUTH_ENABLED:
         return
     if not api_key:
         raise HTTPException(status_code=401, detail={"error":"MISSING_API_KEY","message":"No API key provided. Add header: X-API-Key: <your_key>","field":"X-API-Key","code":"MISSING_API_KEY"})
-    if api_key not in _API_KEYS_SET:
+    if api_key not in _API_KEYS_ALL:
         raise HTTPException(status_code=403, detail={"error":"INVALID_API_KEY","message":"The provided API key is not recognised. Check your X-API-Key header value.","field":"X-API-Key","code":"INVALID_API_KEY"})
+
+
+async def require_admin_key(api_key: Optional[str] = Security(_api_key_header)) -> None:
+    """Dependency: only admin keys are accepted. Readonly keys get 403."""
+    if not API_AUTH_ENABLED:
+        return
+    if not api_key:
+        raise HTTPException(status_code=401, detail={"error":"MISSING_API_KEY","message":"No API key provided. Add header: X-API-Key: <your_key>","field":"X-API-Key","code":"MISSING_API_KEY"})
+    if api_key not in _API_KEYS_ALL:
+        raise HTTPException(status_code=403, detail={"error":"INVALID_API_KEY","message":"The provided API key is not recognised. Check your X-API-Key header value.","field":"X-API-Key","code":"INVALID_API_KEY"})
+    if api_key not in _API_KEYS_ADMIN:
+        raise HTTPException(status_code=403, detail={"error":"INSUFFICIENT_PERMISSIONS","message":"This action requires an admin API key. Your key has read-only access.","field":"X-API-Key","code":"INSUFFICIENT_PERMISSIONS"})
 
 
 # ─────────────────────────────────────────────
@@ -119,8 +205,6 @@ async def lifespan(app: FastAPI):
 
 
 def _startup_load_models() -> None:
-    failures = []
-
     print("[STARTUP] Loading RetinaFace detector...", flush=True)
     try:
         model = _get_retinaface_model()
@@ -159,11 +243,6 @@ def _startup_load_models() -> None:
             print("[STARTUP] [WARN] All liveness models unavailable", flush=True)
     except Exception as exc:
         print(f"[STARTUP] [WARN] Liveness load error: {exc}", flush=True)
-
-    if failures:
-        print("\n[STARTUP] [WARN] Some components failed; server running in degraded mode:", flush=True)
-        for f in failures:
-            print(f"  - {f}", flush=True)
 
     print("[STARTUP] All models loaded — server ready.\n", flush=True)
 
@@ -230,6 +309,34 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ── Upload size limit ─────────────────────────────────────────────────────
+# Rejects requests whose Content-Length header exceeds MAX_UPLOAD_BYTES.
+# Protects ML inference endpoints from oversized payloads.
+MAX_UPLOAD_BYTES = 10 * 1024 * 1024  # 10 MB
+
+@app.middleware("http")
+async def limit_upload_size(request: Request, call_next):
+    content_length = request.headers.get("content-length")
+    if content_length and int(content_length) > MAX_UPLOAD_BYTES:
+        return _error_response(
+            status_code=413,
+            error="FILE_TOO_LARGE",
+            message=f"Upload exceeds the 10 MB limit. Compress or resize the image and try again.",
+            field="image",
+        )
+    return await call_next(request)
+
+
+# ── ngrok interstitial bypass ─────────────────────────────────────────────
+# Adds ngrok-skip-browser-warning to every response so the initial HTML
+# page load also bypasses the ngrok warning page (JS api.js handles fetch calls).
+@app.middleware("http")
+async def ngrok_skip_middleware(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["ngrok-skip-browser-warning"] = "true"
+    return response
 
 
 # ─────────────────────────────────────────────
@@ -527,6 +634,8 @@ async def _resolve_geo(
 
 from fastapi import APIRouter
 v1 = APIRouter(prefix="/v1", dependencies=[Depends(require_api_key)])
+# Admin-only router — register and delete require admin key
+v1_admin = APIRouter(prefix="/v1", dependencies=[Depends(require_admin_key)])
 
 
 # ═══════════════════════════════════════════════
@@ -629,7 +738,7 @@ async def liveness_check(
 # POST /v1/persons  — register (201 Created)
 # ═══════════════════════════════════════════════
 
-@v1.post("/persons", response_model=RegisterResponse, status_code=201, tags=["Persons"])
+@v1_admin.post("/persons", response_model=RegisterResponse, status_code=201, tags=["Persons"])
 @limiter.limit("10/minute")
 async def register(
     request: Request,
@@ -942,17 +1051,27 @@ async def log_attendance(
         name              = _resolve_identity_name(person_ref)
 
         if is_match(person_ref):
-            if name not in present:
-                present.append(name)
             _do_auto_update(person_ref, score, mode, face, embedding, display_name=name)
-            detail.append({
-                "face_id":        face["face_id"],
-                "status":         "matched",
-                "name":           name,
-                "score":          score,
-                "mode":           mode,
-                "liveness_score": liveness_result.get("score") if liveness_result else None,
-            })
+            if _can_log_attendance(name):
+                # First time this person is seen in the cooldown window — count them
+                if name not in present:
+                    present.append(name)
+                detail.append({
+                    "face_id":        face["face_id"],
+                    "status":         "matched",
+                    "name":           name,
+                    "score":          score,
+                    "mode":           mode,
+                    "liveness_score": liveness_result.get("score") if liveness_result else None,
+                })
+            else:
+                # Within the cooldown window — acknowledge but don't double-count
+                detail.append({
+                    "face_id": face["face_id"],
+                    "status":  "already_logged",
+                    "name":    name,
+                    "score":   score,
+                })
         else:
             unknown += 1
             detail.append({
@@ -1035,7 +1154,7 @@ def person_get(request: Request, name: str):
 # DELETE /v1/persons/{name}  — 204 No Content
 # ═══════════════════════════════════════════════
 
-@v1.delete("/persons/{name}", status_code=204, tags=["Persons"])
+@v1_admin.delete("/persons/{name}", status_code=204, tags=["Persons"])
 @limiter.limit("10/minute")
 def person_delete(request: Request, name: str):
     """
@@ -1066,3 +1185,4 @@ def db_tier(request: Request):
 # ─────────────────────────────────────────────
 
 app.include_router(v1)
+app.include_router(v1_admin)
