@@ -12,21 +12,6 @@ function fmtBbox(bbox) {
     .join(", ")}]`;
 }
 
-// ── rAF scroll lock ───────────────────────────────────
-// Uses requestAnimationFrame to snap scroll back every frame
-// for durationMs ms. Covers DOM injection + all img.onload reflows.
-function lockScrollFor(durationMs) {
-  const targetY = window.scrollY;
-  const deadline = performance.now() + durationMs;
-  function frame(now) {
-    if (window.scrollY !== targetY) {
-      window.scrollTo({ top: targetY, behavior: "auto" });
-    }
-    if (now < deadline) requestAnimationFrame(frame);
-  }
-  requestAnimationFrame(frame);
-}
-
 export function renderResults(data) {
   const box = document.getElementById("results");
 
@@ -94,10 +79,6 @@ export function renderResults(data) {
     })
     .join("");
 
-  // Lock scroll BEFORE and during innerHTML set.
-  // 2500ms covers: DOM reflow + all map tile img.onload callbacks
-  // (tile loads on mobile can take up to 2s on slow networks).
-  lockScrollFor(2500);
   box.innerHTML = html;
 
   toast(`${data.matched_count} of ${data.total_faces} face(s) matched`);

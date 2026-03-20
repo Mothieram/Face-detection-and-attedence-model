@@ -712,6 +712,8 @@ header {
     text-decoration: none;
     animation: pop .18s ease;
     transition: border-color .15s, box-shadow .15s;
+    min-height: 90px;
+    /* prevents card height jump when geo info loads */
 }
 
 .geo-card-v2:hover {
@@ -722,10 +724,14 @@ header {
 .geo-thumb-wrap {
     position: relative;
     width: 100px;
-    min-height: 80px;
+    height: 90px;
+    /* fixed height — prevents reflow when map tiles load */
+    min-height: 90px;
     flex-shrink: 0;
     background: #111118;
     overflow: hidden;
+    contain: strict;
+    /* tells browser this box never affects outside layout */
 }
 
 .geo-thumb {

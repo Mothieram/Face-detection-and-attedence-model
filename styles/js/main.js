@@ -4,7 +4,12 @@
 
 import { toast } from "./toast.js";
 import { initStatus } from "./status.js";
-import { toggleCamera, switchCamera } from "./camera.js";
+import {
+  toggleCamera,
+  switchCamera,
+  pauseCamera,
+  resumeCamera,
+} from "./camera.js";
 import { captureAndMatch, captureAndRegister } from "./action.js";
 import { startGeoWatch, tapGeoPill } from "./geo.js";
 
@@ -20,6 +25,29 @@ window._tapGeoPill = () => tapGeoPill();
 
 // ── Boot ──────────────────────────────────────────────
 initStatus();
+
+// ── Page visibility — stop camera when tab/app is hidden ─────────────────
+// Fires on: tab switch, home button, screen lock, app switcher, browser close.
+// This is the correct cross-browser way to detect background/foreground.
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "hidden") {
+    // Page going to background — stop detection and release camera
+    pauseCamera();
+  } else if (document.visibilityState === "visible") {
+    // Page coming back to foreground — restart camera if it was running
+    resumeCamera();
+  }
+});
+
+// pagehide fires on iOS Safari when the page is being unloaded / swiped away.
+// visibilitychange alone is not reliable on iOS for true tab close.
+window.addEventListener(
+  "pagehide",
+  () => {
+    pauseCamera();
+  },
+  { capture: true },
+);
 
 // Start GPS immediately on page load — don't wait for camera start.
 // Pill becomes live and tappable as soon as the page opens.

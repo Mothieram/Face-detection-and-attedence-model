@@ -194,14 +194,8 @@ export async function captureAndRegister() {
     }
 
     // 201 Created — success
-    const lockedY = window.scrollY;
-    const deadline = performance.now() + 2500;
-    const lockFrame = (now) => {
-      if (window.scrollY !== lockedY)
-        window.scrollTo({ top: lockedY, behavior: "auto" });
-      if (now < deadline) requestAnimationFrame(lockFrame);
-    };
-    requestAnimationFrame(lockFrame);
+    // Blur active input so mobile keyboard dismisses without jumping scroll.
+    if (document.activeElement) document.activeElement.blur();
 
     document.getElementById("results").innerHTML = `
       <div class="card matched">

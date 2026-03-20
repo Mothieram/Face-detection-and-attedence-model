@@ -144,7 +144,10 @@ async function tickLiveDetect() {
         try {
           const fd = new FormData();
           fd.append("image", blob, "live.jpg");
-          const r = await apiFetch("/faces/detections", { method: "POST", body: fd });
+          const r = await apiFetch("/faces/detections", {
+            method: "POST",
+            body: fd,
+          });
           if (!r.ok) throw new Error(`detect ${r.status}`);
           const data = await r.json();
           const faces = data.faces || [];
@@ -182,6 +185,50 @@ export function stopLiveDetect() {
     detectTimer = null;
   }
   clearOverlay();
+}
+
+// ── Visibility management ─────────────────────────────
+// Called when the page is hidden (tab switched, app backgrounded, screen off).
+// Stops the detect loop and releases the camera track so the OS can reclaim
+// the camera resource and the battery is not drained in the background.
+export function pauseCamera() {
+  if (!stream) return;
+  stopLiveDetect();
+  // Stop all tracks — releases camera LED and hardware resource
+  stream.getTracks().forEach((t) => t.stop());
+}
+
+// Called when the page becomes visible again after being hidden.
+// Restarts the camera stream from scratch and resumes the detect loop.
+export async function resumeCamera() {
+  if (!stream) return; // Camera was never started — nothing to resume
+  const vid = document.getElementById("vid");
+  const mobile = isTouchPrimary();
+  const videoConstraints = mobile
+    ? {
+        facingMode: { ideal: currentFacingMode },
+        width: { ideal: 480, max: 720 },
+        height: { ideal: 640, max: 1280 },
+      }
+    : {
+        facingMode: { ideal: currentFacingMode },
+        width: { ideal: 1280 },
+        height: { ideal: 720 },
+      };
+
+  try {
+    const newStream = await navigator.mediaDevices.getUserMedia({
+      video: videoConstraints,
+      audio: false,
+    });
+    stream = newStream;
+    vid.srcObject = newStream;
+    await vid.play();
+    applyResponsiveCameraFit();
+    startLiveDetect(detectIntervalMs);
+  } catch {
+    // Camera unavailable on resume (e.g. another app grabbed it) — leave stopped
+  }
 }
 
 // ── Capture helper ────────────────────────────────────
@@ -390,4 +437,3 @@ export async function switchCamera() {
     /* ignore */
   }
 }
-

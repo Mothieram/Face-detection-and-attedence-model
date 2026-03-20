@@ -660,7 +660,7 @@ def get_status(request: Request):
 # ═══════════════════════════════════════════════
 
 @v1.post("/faces/detections", response_model=DetectResponse, tags=["Detection"])
-@limiter.limit("60/minute")
+@limiter.limit("120/minute")
 async def detect(
     request: Request,
     image: UploadFile = File(..., description="JPEG or PNG image"),
