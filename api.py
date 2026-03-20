@@ -83,6 +83,7 @@ from modules.persons_db   import (
     delete_person_by_name,
     get_person_by_id,
     get_person_by_name,
+    list_persons,
 )
 
 # ─────────────────────────────────────────────
@@ -1100,37 +1101,19 @@ async def log_attendance(
 @limiter.limit("30/minute")
 def persons_list(
     request: Request,
-    limit:              int  = Query(50,    ge=1, le=500, description="Max records to return"),
-    offset:             int  = Query(0,     ge=0,         description="Number of records to skip"),
-    include_embeddings: bool = Query(False,               description="Include raw 512-d embeddings (large payload)"),
+    limit:            int           = Query(50,   ge=1, le=500, description="Max records to return"),
+    after_created_at: Optional[str] = Query(None, description="Cursor: created_at from previous next_cursor"),
+    after_person_id:  Optional[str] = Query(None, description="Cursor: person_id from previous next_cursor"),
 ):
     """
-    List all registered persons. Paginated — use `limit` and `offset`.
+    List registered persons. Cursor-paginated — O(log n) on every page.
+    Pass next_cursor values from the previous response to get the next page.
     """
-    all_records = list(load_db())
-    page        = all_records[offset : offset + limit]
-
-    cleaned = []
-    for r in page:
-        entry = {
-            "name":           r.get("name", ""),
-            "display_name":   r.get("display_name", r.get("name", "")),
-            "embedding_mode": r.get("embedding_mode", ""),
-            "template_type":  r.get("template_type", ""),
-            "bbox":           r.get("bbox", []),
-            "landmarks":      r.get("landmarks", {}),
-        }
-        if include_embeddings:
-            entry["embedding"] = r.get("embedding", [])
-        cleaned.append(entry)
-
-    return {
-        "records":  cleaned,
-        "total":    len(all_records),
-        "limit":    limit,
-        "offset":   offset,
-        "has_more": (offset + limit) < len(all_records),
-    }
+    return list_persons(
+        limit=limit,
+        after_created_at=after_created_at,
+        after_person_id=after_person_id,
+    )
 
 
 # ═══════════════════════════════════════════════

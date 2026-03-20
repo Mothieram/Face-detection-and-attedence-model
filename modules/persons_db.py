@@ -88,6 +88,13 @@ def _ensure_schema_postgres() -> None:
                 )
                 """
             )
+            # Composite index for O(log n) cursor-based pagination
+            cur.execute(
+                """
+                CREATE INDEX IF NOT EXISTS idx_persons_cursor
+                ON persons (created_at ASC, person_id ASC)
+                """
+            )
         conn.commit()
     finally:
         conn.close()
@@ -103,6 +110,13 @@ def _ensure_schema_sqlite() -> None:
             display_name TEXT NOT NULL,
             created_at TEXT NOT NULL DEFAULT (datetime('now'))
         )
+        """
+    )
+    # Composite index for O(log n) cursor-based pagination
+    conn.execute(
+        """
+        CREATE INDEX IF NOT EXISTS idx_persons_cursor
+        ON persons (created_at ASC, person_id ASC)
         """
     )
     conn.commit()
@@ -305,3 +319,116 @@ def upsert_person(person_id: str, display_name: str) -> Optional[dict]:
         conn.commit()
 
     return get_person_by_id(pid) or get_person_by_name(display_name)
+
+
+def list_persons(
+    limit: int = 50,
+    after_created_at: Optional[str] = None,
+    after_person_id: Optional[str] = None,
+) -> dict:
+    """
+    Return up to `limit` persons in (created_at, person_id) order.
+
+    Cursor-based pagination — O(log n) on every page via idx_persons_cursor.
+
+    First page  : omit both cursor params.
+    Next page   : pass next_cursor values from the previous response.
+
+    Returns:
+        {
+            "records":     list[dict],
+            "limit":       int,
+            "has_more":    bool,
+            "next_cursor": {"after_created_at": str, "after_person_id": str} | None
+        }
+    """
+    _ensure_schema()
+
+    use_cursor = bool(after_created_at and after_person_id)
+
+    if _POSTGRES:
+        conn = _pg_connect()
+        try:
+            with conn.cursor() as cur:
+                if use_cursor:
+                    cur.execute(
+                        """
+                        SELECT person_id::text, name_key, display_name, created_at::text
+                        FROM persons
+                        WHERE (created_at, person_id) > (%s::timestamptz, %s::uuid)
+                        ORDER BY created_at ASC, person_id ASC
+                        LIMIT %s
+                        """,
+                        (after_created_at, after_person_id, limit + 1),
+                    )
+                else:
+                    cur.execute(
+                        """
+                        SELECT person_id::text, name_key, display_name, created_at::text
+                        FROM persons
+                        ORDER BY created_at ASC, person_id ASC
+                        LIMIT %s
+                        """,
+                        (limit + 1,),
+                    )
+                rows = [
+                    {
+                        "person_id":    r[0],
+                        "name_key":     r[1],
+                        "display_name": r[2],
+                        "created_at":   r[3],
+                    }
+                    for r in cur.fetchall()
+                ]
+        finally:
+            conn.close()
+    else:
+        conn = _get_sqlite()
+        if use_cursor:
+            raw = conn.execute(
+                """
+                SELECT person_id, name_key, display_name, created_at
+                FROM persons
+                WHERE (created_at, person_id) > (?, ?)
+                ORDER BY created_at ASC, person_id ASC
+                LIMIT ?
+                """,
+                (after_created_at, after_person_id, limit + 1),
+            ).fetchall()
+        else:
+            raw = conn.execute(
+                """
+                SELECT person_id, name_key, display_name, created_at
+                FROM persons
+                ORDER BY created_at ASC, person_id ASC
+                LIMIT ?
+                """,
+                (limit + 1,),
+            ).fetchall()
+        rows = [
+            {
+                "person_id":    r[0],
+                "name_key":     r[1],
+                "display_name": r[2],
+                "created_at":   r[3],
+            }
+            for r in raw
+        ]
+
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+
+    next_cursor = None
+    if has_more:
+        last = rows[-1]
+        next_cursor = {
+            "after_created_at": last["created_at"],
+            "after_person_id":  last["person_id"],
+        }
+
+    return {
+        "records":     rows,
+        "limit":       limit,
+        "has_more":    has_more,
+        "next_cursor": next_cursor,
+    }
