@@ -81,7 +81,6 @@ def _get_client() -> QdrantClient:
     _client = QdrantClient(path=QDRANT_PATH)
     existing = [c.name for c in _client.get_collections().collections]
     if QDRANT_COLLECTION not in existing:
-        t0 = get_tier(0)
         _client.create_collection(
             collection_name=QDRANT_COLLECTION,
             vectors_config=VectorParams(size=EMBEDDING_DIM, distance=Distance.COSINE),
@@ -93,9 +92,9 @@ def _get_client() -> QdrantClient:
 # ── Data Operations ──────────────────────────────────────────────────────
 
 def save_record(name: str, bbox: list, landmarks: dict, embedding: list,
-                embedding_source: str = "unknown", embedding_mode: str | None = None,
+                embedding_mode: str = "cvlface",
                 template_type: str = "template", person_id: str | None = None) -> bool:
-    mode = embedding_mode if embedding_mode is not None else embedding_source
+    mode = embedding_mode
     try:
         display_name, name_key = _validate_name(name)
     except ValueError as e:
@@ -250,42 +249,6 @@ def auto_update_add_template(name: str, mode: str, embedding: list,
             
         return _save_record_locked(display_name, name_key, person_ref, bbox, landmarks, embedding, mode, "template", False), "added"
 
-def record_exists(name: str) -> bool:
-    """Public API: check whether a person has at least one stored template."""
-    try:
-        _, name_key = _validate_name(name)
-    except ValueError:
-        return False
-    return _record_exists_key(name_key)
-
-
-def record_exists_person_id(person_id: str) -> bool:
-    person_ref = (person_id or "").strip()
-    if not person_ref:
-        return False
-    return _record_exists_key(person_ref)
-
-
-def delete_record(name: str) -> bool:
-    """
-    Public API: delete all templates for a person.
-    Returns True when at least one point was deleted.
-    """
-    try:
-        _, name_key = _validate_name(name)
-    except ValueError:
-        return False
-
-    with _get_person_lock(name_key):
-        points = _scroll_by_identity(name_key, limit=10_000)
-        if not points:
-            return False
-
-        ids = [p.id for p in points]
-        _delete_with_retry(_get_client(), ids)
-        _adjust_people_count(-1)
-        return True
-
 
 def delete_record_by_person_id(person_id: str) -> bool:
     person_ref = (person_id or "").strip()
@@ -305,19 +268,12 @@ def _record_exists_key(name_key: str) -> bool:
 
 def _scroll_by_identity(identity: str, limit: int = 100) -> list:
     client = _get_client()
-    by_person_id, _ = client.scroll(
+    results, _ = client.scroll(
         collection_name=QDRANT_COLLECTION,
         scroll_filter=Filter(must=[FieldCondition(key="person_id", match=MatchValue(value=identity))]),
         limit=limit
     )
-    if by_person_id:
-        return list(by_person_id)
-    by_name, _ = client.scroll(
-        collection_name=QDRANT_COLLECTION,
-        scroll_filter=Filter(must=[FieldCondition(key="name", match=MatchValue(value=identity))]),
-        limit=limit
-    )
-    return list(by_name)
+    return list(results)
 
 def fetch_templates_for(identity: str, mode: str) -> list[dict]:
     client = _get_client()
@@ -325,16 +281,6 @@ def fetch_templates_for(identity: str, mode: str) -> list[dict]:
         collection_name=QDRANT_COLLECTION,
         scroll_filter=Filter(must=[
             FieldCondition(key="person_id", match=MatchValue(value=identity)),
-            FieldCondition(key="embedding_mode", match=MatchValue(value=mode)),
-        ]),
-        with_vectors=True, limit=20
-    )
-    if points:
-        return [{"embedding": p.vector, **p.payload} for p in points]
-    points, _ = client.scroll(
-        collection_name=QDRANT_COLLECTION,
-        scroll_filter=Filter(must=[
-            FieldCondition(key="name", match=MatchValue(value=identity)),
             FieldCondition(key="embedding_mode", match=MatchValue(value=mode)),
         ]),
         with_vectors=True, limit=20
