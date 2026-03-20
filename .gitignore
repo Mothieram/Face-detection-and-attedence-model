@@ -1,6 +1,6 @@
 venv
 __pycache__
-face-anti-spoofing
+face-anti-spoofing/
 application.properties
 
 # Model weight caches — downloaded automatically at runtime
