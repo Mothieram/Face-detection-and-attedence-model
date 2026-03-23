@@ -381,3 +381,11 @@ def _parse_geofence_zones() -> list:
 
 
 GEOFENCE_ZONES: list = _parse_geofence_zones()
+
+
+# ─────────────────────────────────────────────
+# Attendance cooldown store
+# ─────────────────────────────────────────────
+
+ATTENDANCE_COOLDOWN_SEC = _int("attendance.cooldown_sec", 1800)
+ATTENDANCE_REDIS_URL    = _str("attendance.redis_url", "redis://localhost:6379/0")

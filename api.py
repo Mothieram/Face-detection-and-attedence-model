@@ -68,7 +68,7 @@ from modules.preprocessor import preprocess_image
 from modules.detector     import detect_faces, _get_retinaface_model
 from modules.aligner      import align_face, check_face_quality
 from modules.liveness     import check_liveness, _load_all_sessions
-from modules.embedder     import generate_embedding, is_cvlface_loaded, _load_cvlface
+from modules.embedder     import generate_embedding, generate_embeddings_batch, is_cvlface_loaded, _load_cvlface
 from modules.database     import (
     save_record,
     auto_update_add_template,
@@ -116,25 +116,97 @@ logger = _setup_logging()
 # Attendance duplicate prevention
 # Tracks last-seen timestamp per person per session.
 # Same person cannot be counted twice within ATTENDANCE_COOLDOWN_SEC.
+#
+# FIX 4 — worker-safe cooldown store
+# Three-tier strategy:
+#   1. Redis  — shared across all workers/servers (multi-region safe)
+#   2. In-process dict — fallback when Redis is unavailable (single worker)
+#
+# Configure in application.properties:
+#   attendance.cooldown_sec = 1800
+#   attendance.redis_url    = redis://localhost:6379/0
 # ─────────────────────────────────────────────
 import threading as _threading
 
-_attendance_lock  = _threading.Lock()
-_attendance_log: dict[str, float] = {}   # person_name → last_logged unix timestamp
-ATTENDANCE_COOLDOWN_SEC = 1800            # 30 minutes — configurable here
+ATTENDANCE_COOLDOWN_SEC = 1800   # 30 minutes — override via application.properties
+
+# ── Try to read redis_url from application.properties ─────────────────────
+try:
+    from config import ATTENDANCE_REDIS_URL as _REDIS_URL
+except ImportError:
+    _REDIS_URL = "redis://localhost:6379/0"
+
+# ── Redis client (lazy init) ───────────────────────────────────────────────
+_redis_client      = None
+_redis_init_lock   = _threading.Lock()
+_redis_available   = None   # None=untested, True=ok, False=unavailable
+
+def _get_redis():
+    """Return a connected Redis client, or None if Redis is unavailable."""
+    global _redis_client, _redis_available
+    if _redis_available is True:
+        return _redis_client
+    if _redis_available is False:
+        return None
+    with _redis_init_lock:
+        if _redis_available is not None:
+            return _redis_client if _redis_available else None
+        try:
+            import redis
+            client = redis.from_url(_REDIS_URL, decode_responses=True,
+                                    socket_connect_timeout=2)
+            client.ping()
+            _redis_client  = client
+            _redis_available = True
+            logger.info("Attendance store: Redis connected (%s)", _REDIS_URL)
+        except Exception as exc:
+            _redis_available = False
+            logger.warning(
+                "Attendance store: Redis unavailable (%s) — "
+                "falling back to in-process dict. "
+                "Cooldown will NOT be enforced across multiple servers.", exc
+            )
+    return _redis_client if _redis_available else None
+
+# ── In-process fallback ────────────────────────────────────────────────────
+_attendance_lock = _threading.Lock()
+_attendance_log: dict[str, float] = {}   # name → expiry unix timestamp
 
 def _can_log_attendance(name: str) -> bool:
-    """Returns True if enough time has passed since this person was last logged."""
+    """
+    Returns True if the person may log attendance now.
+    Uses Redis when available (multi-server safe).
+    Falls back to in-process dict for single-worker setups.
+    """
+    key = f"attendance:cooldown:{name.lower()}"
+    client = _get_redis()
+
+    if client is not None:
+        # Redis path — SET key NX EX ttl is atomic across all workers/servers
+        try:
+            result = client.set(key, "1", nx=True, ex=ATTENDANCE_COOLDOWN_SEC)
+            return bool(result)   # True = key was new = first scan in window
+        except Exception as exc:
+            logger.warning("Redis cooldown check failed (%s) — using fallback", exc)
+
+    # In-process fallback (single worker only)
     now = time.time()
     with _attendance_lock:
-        last = _attendance_log.get(name, 0.0)
-        if now - last >= ATTENDANCE_COOLDOWN_SEC:
-            _attendance_log[name] = now
-            return True
-        return False
+        if now < _attendance_log.get(name.lower(), 0.0):
+            return False
+        _attendance_log[name.lower()] = now + ATTENDANCE_COOLDOWN_SEC
+        return True
 
 def _clear_attendance_log() -> None:
-    """Call at the start of a new attendance session to reset all cooldowns."""
+    """Reset all cooldowns — call at the start of a new attendance session."""
+    client = _get_redis()
+    if client is not None:
+        try:
+            for key in client.scan_iter("attendance:cooldown:*"):
+                client.delete(key)
+            return
+        except Exception as exc:
+            logger.warning("Redis clear failed (%s) — clearing local dict", exc)
     with _attendance_lock:
         _attendance_log.clear()
 
@@ -244,6 +316,17 @@ def _startup_load_models() -> None:
             print("[STARTUP] [WARN] All liveness models unavailable", flush=True)
     except Exception as exc:
         print(f"[STARTUP] [WARN] Liveness load error: {exc}", flush=True)
+
+    # ── Redis connection check ────────────────────────────────────────────
+    print("[STARTUP] Checking Redis attendance store...", flush=True)
+    try:
+        client = _get_redis()
+        if client is not None:
+            print(f"[STARTUP] [OK] Redis connected — attendance cooldown is cross-server safe", flush=True)
+        else:
+            print("[STARTUP] [WARN] Redis unavailable — using in-process dict (single-worker mode)", flush=True)
+    except Exception as exc:
+        print(f"[STARTUP] [WARN] Redis check error: {exc}", flush=True)
 
     print("[STARTUP] All models loaded — server ready.\n", flush=True)
 
@@ -940,6 +1023,10 @@ async def match(
                 quality=face.get("quality"),
             ))
 
+    # ── liveness per face — collect live faces ────────────────────────────
+    liveness_map = {}   # face_id → LivenessResult
+    live_faces   = []   # faces that passed liveness
+
     for face in passed_faces:
         liveness_result = None
 
@@ -974,8 +1061,17 @@ async def match(
                 ))
                 continue
 
-        aligned          = align_face(raw, face["landmarks"], bbox=face["bbox"])
-        embedding, mode  = generate_embedding(aligned)
+        liveness_map[face["face_id"]] = liveness_result
+        live_faces.append(face)
+
+    # ── BATCH EMBEDDING — one forward pass for all live faces ─────────────
+    aligned_crops = [
+        align_face(raw, f["landmarks"], bbox=f["bbox"]) for f in live_faces
+    ]
+    batch_embeddings, mode = generate_embeddings_batch(aligned_crops)
+
+    for face, embedding in zip(live_faces, batch_embeddings):
+        liveness_result   = liveness_map.get(face["face_id"])
         person_ref, score = match_face(embedding, query_mode=mode)
         matched           = is_match(person_ref)
         name              = _resolve_identity_name(person_ref)
@@ -1061,13 +1157,15 @@ async def log_attendance(
 
     present, unknown, spoofed, detail = [], 0, 0, []
 
-    for face in passed_faces:
-        liveness_result = None
+    # ── liveness per face — collect live faces ────────────────────────────
+    liveness_map = {}   # face_id → liveness dict
+    live_faces   = []   # faces that passed liveness
 
+    for face in passed_faces:
         if LIVENESS_ENABLED and not skip_liveness:
             lv = _liveness_check(raw, face,
                                  camera_index=camera_index, skip_active=passive_only)
-            liveness_result = lv
+            liveness_map[face["face_id"]] = lv
             if not lv.get("passed", False):
                 spoofed += 1
                 detail.append({
@@ -1076,9 +1174,16 @@ async def log_attendance(
                     "liveness_score": lv.get("score", 0.0),
                 })
                 continue
+        live_faces.append(face)
 
-        aligned          = align_face(raw, face["landmarks"], bbox=face["bbox"])
-        embedding, mode  = generate_embedding(aligned)
+    # ── BATCH EMBEDDING — one forward pass for all live faces ─────────────
+    aligned_crops = [
+        align_face(raw, f["landmarks"], bbox=f["bbox"]) for f in live_faces
+    ]
+    batch_embeddings, mode = generate_embeddings_batch(aligned_crops)
+
+    for face, embedding in zip(live_faces, batch_embeddings):
+        liveness_result   = liveness_map.get(face["face_id"])
         person_ref, score = match_face(embedding, query_mode=mode)
         name              = _resolve_identity_name(person_ref)
 

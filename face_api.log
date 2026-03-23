@@ -3,3 +3,5 @@
 2026-03-23 10:53:34 INFO     face_api  Background geocode complete: 100 Feet Road, Siddhapudur, Ward 53, Central Zone, Coimbatore, Coimbatore North, Coimbatore, Tamil Nadu, 641001, India
 2026-03-23 10:54:19 INFO     face_api  Background geocode complete: 100 Feet Road, Siddhapudur, Ward 53, Central Zone, Coimbatore, Coimbatore North, Coimbatore, Tamil Nadu, 641001, India
 2026-03-23 10:54:26 INFO     face_api  Background geocode complete: 100 Feet Road, Siddhapudur, Ward 53, Central Zone, Coimbatore, Coimbatore North, Coimbatore, Tamil Nadu, 641001, India
+2026-03-23 12:11:50 INFO     face_api  Attendance store: Redis connected (redis://localhost:6379/0)
+2026-03-23 12:15:08 INFO     face_api  Attendance store: Redis connected (redis://localhost:6379/0)
