@@ -13,3 +13,4 @@ persons.sqlite3
 weights/
 5.0.0
 face_api.log
+face_api.log.*
