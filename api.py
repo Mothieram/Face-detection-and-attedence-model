@@ -578,19 +578,16 @@ class DeleteResponse(BaseModel):
     message: str
 
 class PersonRecord(BaseModel):
-    name: str
+    person_id: str
+    name_key: str
     display_name: str
-    embedding_mode: str
-    template_type: str
-    bbox: list
-    landmarks: dict
+    created_at: str
 
 class PersonsListResponse(BaseModel):
     records: list[PersonRecord]
-    total: int
     limit: int
-    offset: int
     has_more: bool
+    next_cursor: Optional[dict] = None
 
 class AttendanceResult(BaseModel):
     timestamp: int
