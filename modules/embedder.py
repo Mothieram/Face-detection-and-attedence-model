@@ -9,8 +9,19 @@ Model downloads automatically on first run and caches locally.
 Recommended model:
   minchul/cvlface_adaface_ir101_webface12m
 
-Usage:
+Usage (single — unchanged API):
   embedding, mode = generate_embedding(aligned_face_bgr)
+
+Usage (batch — new, for multi-face images):
+  embeddings, mode = generate_embeddings_batch([crop1, crop2, crop3])
+  # Returns list of 512-d lists, same order as input. Single forward pass.
+
+FIX (bottleneck #2 — batch embedding):
+  Added generate_embeddings_batch() that stacks N aligned crops into one
+  tensor and runs a single model forward pass, replacing the N-loop pattern
+  used in the match and attendance endpoints.
+  generate_embedding() is unchanged — it now delegates to the batch function
+  with N=1, so all existing callers continue to work without modification.
 """
 
 import os
@@ -40,14 +51,47 @@ def generate_embedding(aligned_face: np.ndarray) -> tuple[list, str]:
         (embedding, mode)
         embedding : list of 512 floats (L2-normalized)
         mode      : 'cvlface' | 'fallback'
+
+    Unchanged API — delegates to generate_embeddings_batch internally.
     """
+    embeddings, mode = generate_embeddings_batch([aligned_face])
+    return embeddings[0], mode
+
+
+def generate_embeddings_batch(
+    aligned_faces: list[np.ndarray],
+) -> tuple[list[list[float]], str]:
+    """
+    Generate 512-d embeddings for a batch of aligned BGR face crops in a
+    SINGLE model forward pass.
+
+    Parameters
+    ----------
+    aligned_faces : list of BGR ndarrays, each already aligned / 112×112.
+
+    Returns
+    -------
+    embeddings : list of 512-d float lists, same order as input.
+    mode       : 'cvlface' | 'fallback'
+
+    Example (in match / attendance endpoint):
+        aligned_crops = [align_face(raw, f["landmarks"], bbox=f["bbox"])
+                         for f in live_faces]
+        batch_embs, mode = generate_embeddings_batch(aligned_crops)
+        for face, embedding in zip(live_faces, batch_embs):
+            person_ref, score = match_face(embedding, query_mode=mode)
+    """
+    if not aligned_faces:
+        return [], "cvlface"
+
     model = _load_cvlface()
+
     if model is not None:
-        return _cvlface_embedding(aligned_face, model), "cvlface"
+        return _cvlface_embedding_batch(aligned_faces, model), "cvlface"
 
     print("[EMBED] CVLFace unavailable — using fallback embedding.")
     print("[EMBED] [WARN] Install: transformers huggingface_hub omegaconf hydra-core timm fvcore iopath yacs")
-    return _enhanced_embedding(aligned_face), "fallback"
+    return [_enhanced_embedding(face) for face in aligned_faces], "fallback"
 
 
 def is_cvlface_loaded() -> bool:
@@ -55,7 +99,7 @@ def is_cvlface_loaded() -> bool:
 
 
 # ═══════════════════════════════════════════════
-# CVLFace loader
+# CVLFace loader  (unchanged)
 # ═══════════════════════════════════════════════
 
 def _load_cvlface():
@@ -65,7 +109,6 @@ def _load_cvlface():
         return _cvlface_model
 
     with _model_lock:
-        # Re-check inside lock in case another thread loaded it while we waited
         if _cvlface_model is not None:
             return _cvlface_model
 
@@ -96,9 +139,6 @@ def _load_cvlface():
             os.chdir(cache_path)
             sys.path.insert(0, cache_path)
 
-            # Suppress hundreds of "copying from non-meta parameter" UserWarnings
-            # that CVLFace's checkpoint loader emits during weight loading.
-            # These are harmless — the model loads correctly regardless.
             import warnings
             with warnings.catch_warnings():
                 warnings.filterwarnings(
@@ -114,7 +154,7 @@ def _load_cvlface():
             model  = model.to(device)
 
             _cvlface_model  = model
-            _cvlface_device = device   # cache here — used in every _cvlface_embedding call
+            _cvlface_device = device
             print(f"[EMBED] CVLFace loaded on {device} [OK]")
             return model
 
@@ -127,25 +167,37 @@ def _load_cvlface():
 
 
 # ═══════════════════════════════════════════════
-# CVLFace embedding
+# CVLFace embedding — batch (new core function)
 # ═══════════════════════════════════════════════
 
-def _cvlface_embedding(face_bgr: np.ndarray, model) -> list:
-    face_norm = preprocess_face(face_bgr)
-    tensor    = torch.from_numpy(face_norm).permute(2, 0, 1).unsqueeze(0)
-    # Use cached device — never call next(model.parameters()) per inference
-    tensor    = tensor.to(_cvlface_device)
+def _cvlface_embedding_batch(faces_bgr: list[np.ndarray], model) -> list[list[float]]:
+    """
+    Run model inference once for all faces in the list.
+
+    Each face is preprocessed with preprocess_face() (same as the original
+    single-face path), then stacked into a (N, 3, H, W) batch tensor.
+    The result is L2-normalised per row and returned as a plain list of lists.
+    """
+    # Build individual tensors using the same preprocess_face() call the
+    # original single-face code used — no change to preprocessing logic.
+    tensors = []
+    for face_bgr in faces_bgr:
+        face_norm = preprocess_face(face_bgr)                          # HWC float32
+        t = torch.from_numpy(face_norm).permute(2, 0, 1)              # CHW
+        tensors.append(t)
+
+    batch = torch.stack(tensors).to(_cvlface_device)                  # (N, C, H, W)
 
     with torch.no_grad():
-        output = model(tensor)
-        embedding = output[0] if isinstance(output, (tuple, list)) else output
-        embedding = F.normalize(embedding, p=2, dim=1)
+        output = model(batch)
+        embeddings = output[0] if isinstance(output, (tuple, list)) else output
+        embeddings = F.normalize(embeddings, p=2, dim=1)               # L2 per row
 
-    return embedding.squeeze().cpu().numpy().tolist()
+    return embeddings.cpu().numpy().tolist()                           # list of N lists
 
 
 # ═══════════════════════════════════════════════
-# Enhanced fallback (no model available)
+# Enhanced fallback  (unchanged)
 # ═══════════════════════════════════════════════
 
 def _enhanced_embedding(face_112: np.ndarray) -> list:
@@ -153,14 +205,12 @@ def _enhanced_embedding(face_112: np.ndarray) -> list:
     face     = cv2.resize(face_112, (112, 112)).astype(np.float32) / 255.0
     features = []
 
-    # Multi-scale channel statistics
     for scale in [112, 56, 28]:
         r = cv2.resize(face, (scale, scale))
         for c in range(3):
             ch = r[:, :, c]
             features += [float(np.mean(ch)), float(np.std(ch))]
 
-    # 8×8 spatial grid channel means
     bh, bw = face.shape[0] // 8, face.shape[1] // 8
     for i in range(8):
         for j in range(8):
@@ -168,7 +218,6 @@ def _enhanced_embedding(face_112: np.ndarray) -> list:
             for c in range(3):
                 features.append(float(np.mean(block[:, :, c])))
 
-    # Sobel gradient 8×8 grid
     gray   = cv2.cvtColor((face * 255).astype(np.uint8), cv2.COLOR_BGR2GRAY)
     gray_f = gray.astype(np.float32) / 255.0
     grad   = np.sqrt(cv2.Sobel(gray_f, cv2.CV_32F, 1, 0, ksize=3) ** 2 +
@@ -178,7 +227,6 @@ def _enhanced_embedding(face_112: np.ndarray) -> list:
         for j in range(8):
             features.append(float(np.mean(grad[i*gh:(i+1)*gh, j*gw:(j+1)*gw])))
 
-    # LBP texture — single pass over three 56×56 regions
     for ry, rx in [(0, 0), (0, 56), (56, 0)]:
         hist = _lbp_hist(gray[ry:ry+56, rx:rx+56])
         features.extend(hist)

@@ -614,6 +614,13 @@ async def _resolve_geo(
     zone_id: Optional[str],
     skip_geocode: bool,
 ) -> dict:
+    """
+    Full geotag — geofence check + reverse geocode in one call.
+    Called in parallel with _run_pipeline() via asyncio.gather so the
+    Nominatim HTTP call (200-800 ms) overlaps with face detection and
+    embedding instead of adding to total latency.
+    Address info is present in the response — no more 'Unknown'.
+    """
     geo = await geotag_event(
         lat=lat,
         lon=lon,
@@ -885,16 +892,28 @@ async def match(
     Identify all faces in an image against the database.
     Returns one result per detected face.
     """
+    import asyncio as _asyncio
+
     image_bytes = await image.read()
     raw = _decode_image(image_bytes)
-    geo = await _resolve_geo(
-        image_bytes=image_bytes,
-        lat=lat, lon=lon,
-        accuracy_m=accuracy_m,
-        zone_id=zone_id,
-        skip_geocode=skip_geocode,
+
+    # Run geocode AND face pipeline in parallel.
+    # Nominatim (~500 ms) overlaps with RetinaFace + preprocess (~500 ms)
+    # so total wait = max(geocode, pipeline) instead of geocode + pipeline.
+    # Address info is fully present in the response — no more "Unknown".
+    async def _run_pipeline_async():
+        return _run_pipeline(raw)
+
+    geo, (preprocessed, faces) = await _asyncio.gather(
+        _resolve_geo(
+            image_bytes=image_bytes,
+            lat=lat, lon=lon,
+            accuracy_m=accuracy_m,
+            zone_id=zone_id,
+            skip_geocode=skip_geocode,
+        ),
+        _run_pipeline_async(),
     )
-    preprocessed, faces = _run_pipeline(raw)
 
     if not faces:
         return {"results": [], "total_faces": 0, "matched_count": 0, "geo": geo}
@@ -1016,16 +1035,28 @@ async def log_attendance(
     - `spoofed_count` — faces that failed liveness
     - `detail` — per-face breakdown
     """
+    import asyncio as _asyncio
+
     image_bytes = await image.read()
     raw = _decode_image(image_bytes)
-    geo = await _resolve_geo(
-        image_bytes=image_bytes,
-        lat=lat, lon=lon,
-        accuracy_m=accuracy_m,
-        zone_id=zone_id,
-        skip_geocode=skip_geocode,
+
+    # Run geocode AND face pipeline in parallel.
+    # Nominatim (~500 ms) overlaps with RetinaFace + preprocess (~500 ms)
+    # so total wait = max(geocode, pipeline) instead of geocode + pipeline.
+    # Address info is fully present in the response — no more "Unknown".
+    async def _run_pipeline_async():
+        return _run_pipeline(raw)
+
+    geo, (_, faces) = await _asyncio.gather(
+        _resolve_geo(
+            image_bytes=image_bytes,
+            lat=lat, lon=lon,
+            accuracy_m=accuracy_m,
+            zone_id=zone_id,
+            skip_geocode=skip_geocode,
+        ),
+        _run_pipeline_async(),
     )
-    _, faces = _run_pipeline(raw)
     passed_faces, _ = _quality_filter(raw, faces)
 
     present, unknown, spoofed, detail = [], 0, 0, []

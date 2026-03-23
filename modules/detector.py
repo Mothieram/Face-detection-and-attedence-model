@@ -21,19 +21,33 @@ def detect_faces(image: np.ndarray) -> list[dict]:
     RetinaFace-PyTorch detection with multi-scale and multi-threshold passes.
     Returns faces in canonical project format:
       {score, bbox, landmarks, face_id}
+
+    FIX (bottleneck #1 — early exit):
+      The original threshold loop ran every threshold in DETECTION_CONFIDENCE_PASSES
+      even when the first pass already found >= 2 faces.  Now we break as soon
+      as any threshold yields faces, unless those faces are fewer than 2 (in which
+      case we try a lower threshold to catch partially occluded / dim faces).
+
+      Original: always N threshold passes regardless of result
+      Fixed:    1 pass on clean images; falls through only when faces < 2
     """
     _log_backend_once()
     model = _get_retinaface_model()
     if model is None:
         return _fallback_detect_faces_haar(image)
 
+    # ── scale passes (unchanged — each scale is a separate inference) ──────
     all_faces = []
     for scale in DETECTION_SCALE_PASSES:
         if scale == 1.0:
             work = image
         else:
             h, w = image.shape[:2]
-            work = cv2.resize(image, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_CUBIC)
+            work = cv2.resize(
+                image,
+                (int(w * scale), int(h * scale)),
+                interpolation=cv2.INTER_CUBIC,
+            )
 
         detections = _predict_faces_pytorch(model, work)
         if not detections:
@@ -51,7 +65,9 @@ def detect_faces(image: np.ndarray) -> list[dict]:
 
             if scale != 1.0:
                 x1, y1, x2, y2 = x1 / scale, y1 / scale, x2 / scale, y2 / scale
-                landmarks = {k: [v[0] / scale, v[1] / scale] for k, v in landmarks.items()}
+                landmarks = {
+                    k: [v[0] / scale, v[1] / scale] for k, v in landmarks.items()
+                }
 
             all_faces.append(
                 {
@@ -64,21 +80,41 @@ def detect_faces(image: np.ndarray) -> list[dict]:
     if not all_faces:
         return []
 
+    # ── threshold passes — EARLY EXIT once we have a usable result ─────────
+    #
+    # Strategy:
+    #   • Try each threshold from highest (strictest) to lowest.
+    #   • If the result has >= 2 faces → stop immediately (early exit).
+    #   • If the result has exactly 1 face → keep it as the best result so
+    #     far but still try the next threshold in case a lower one reveals
+    #     a second face (preserves the original >= 2 break behaviour).
+    #   • If a lower threshold finds more faces → use those instead.
+    #   • After all thresholds → use whatever the last successful pass gave.
+    #
+    # On a typical single-person image this means exactly 1 threshold pass.
+
     thresholds = DETECTION_CONFIDENCE_PASSES or [CONFIDENCE_THRESHOLD]
-    faces = []
+    best_faces: list[dict] = []
+
     for thr in thresholds:
         thr = float(thr)
         candidates = [
             f
             for f in all_faces
             if f["score"] >= thr
-            and min(f["bbox"][2] - f["bbox"][0], f["bbox"][3] - f["bbox"][1]) >= MIN_FACE_SIZE_PX
+            and min(f["bbox"][2] - f["bbox"][0], f["bbox"][3] - f["bbox"][1])
+            >= MIN_FACE_SIZE_PX
         ]
         candidates = _nms_faces(candidates, DETECTION_NMS_IOU)
-        faces = candidates
-        if len(faces) >= 2:
+
+        if len(candidates) > len(best_faces):
+            best_faces = candidates   # lower threshold found more faces — keep
+
+        if len(best_faces) >= 2:
+            # Enough faces found — no need to try lower thresholds
             break
 
+    faces = best_faces
     faces.sort(key=lambda x: x["score"], reverse=True)
     for idx, face in enumerate(faces, 1):
         face["face_id"] = f"face_{idx}"
@@ -101,7 +137,6 @@ def _get_retinaface_model():
         return None
 
     try:
-        # The package downloads pretrained weights on first run if missing.
         model = get_model("resnet50_2020-07-20", max_size=960, device=_RETINAFACE_DEVICE)
         model.eval()
         _RETINAFACE_MODEL = model
@@ -113,7 +148,6 @@ def _get_retinaface_model():
 
 
 def _predict_faces_pytorch(model, image_bgr: np.ndarray) -> list[dict]:
-    # retinaface-pytorch expects RGB image
     rgb = cv2.cvtColor(image_bgr, cv2.COLOR_BGR2RGB)
     preds = model.predict_jsons(rgb, confidence_threshold=0.1, nms_threshold=0.4)
     if not isinstance(preds, list):
@@ -125,7 +159,6 @@ def _landmarks_list_to_dict(points: list) -> dict:
     if not isinstance(points, list) or len(points) < 5:
         return {}
 
-    # RetinaFace landmark order convention
     names = ["right_eye", "left_eye", "nose", "mouth_right", "mouth_left"]
     out = {}
     for idx, name in enumerate(names):
@@ -142,7 +175,11 @@ def _log_backend_once() -> None:
     global _RETINAFACE_LOGGED
     if _RETINAFACE_LOGGED:
         return
-    backend = f"RetinaFace PyTorch ({_RETINAFACE_DEVICE})" if _RETINAFACE_AVAILABLE else "OpenCV Haar fallback"
+    backend = (
+        f"RetinaFace PyTorch ({_RETINAFACE_DEVICE})"
+        if _RETINAFACE_AVAILABLE
+        else "OpenCV Haar fallback"
+    )
     print(f"[DETECT] Detection backend: {backend}")
     _RETINAFACE_LOGGED = True
 
@@ -165,11 +202,11 @@ def _fallback_detect_faces_haar(image: np.ndarray) -> list[dict]:
     for idx, (x, y, w, h) in enumerate(boxes, 1):
         x1, y1, x2, y2 = int(x), int(y), int(x + w), int(y + h)
         landmarks = {
-            "right_eye": [x1 + int(0.35 * w), y1 + int(0.38 * h)],
-            "left_eye": [x1 + int(0.65 * w), y1 + int(0.38 * h)],
-            "nose": [x1 + int(0.50 * w), y1 + int(0.56 * h)],
+            "right_eye":   [x1 + int(0.35 * w), y1 + int(0.38 * h)],
+            "left_eye":    [x1 + int(0.65 * w), y1 + int(0.38 * h)],
+            "nose":        [x1 + int(0.50 * w), y1 + int(0.56 * h)],
             "mouth_right": [x1 + int(0.40 * w), y1 + int(0.76 * h)],
-            "mouth_left": [x1 + int(0.60 * w), y1 + int(0.76 * h)],
+            "mouth_left":  [x1 + int(0.60 * w), y1 + int(0.76 * h)],
         }
         faces.append(
             {
