@@ -9,45 +9,101 @@
     <link
         href="https://fonts.googleapis.com/css2?family=Syne:wght@400;600;700;800&family=DM+Mono:wght@300;400;500&display=swap"
         rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        bg: '#0a0a0f',
+                        surface: '#12121a',
+                        card: '#1a1a26',
+                        border: '#2a2a3d',
+                        accent: '#4af0a0',
+                        warn: '#ff6b6b',
+                        text: '#e8e8f0',
+                        muted: '#6b6b8a',
+                    },
+                    fontFamily: {
+                        syne: ['Syne', 'sans-serif'],
+                        mono: ['"DM Mono"', 'monospace'],
+                    },
+                    screens: {
+                        'xs': '420px',
+                        'sm': '680px',
+                        'md': '820px',
+                        'lg': '1024px',
+                        'xl': '1100px',
+                    },
+                },
+            },
+        }
+    </script>
     <link rel="stylesheet" href="./styles/styles.css">
 </head>
 
-<body>
-    <div class="shell">
+<body class="bg-bg text-text font-syne text-sm leading-relaxed h-full w-full">
 
-        <header>
-            <div class="logo">
-                <div class="logo-mark">👁</div>
-                <h1>Face<span>ID</span></h1>
+    <!-- Shell -->
+    <div
+        class="shell relative z-10 max-w-[1100px] mx-auto px-[10px] pb-[20px] xs:px-3 sm:px-[18px] sm:pb-7 xl:px-6 xl:pb-12">
+
+        <!-- Header -->
+        <header class="flex items-center justify-between border-b border-border gap-[10px] flex-wrap
+                       py-[14px] sm:py-[22px] sm:pb-[18px]">
+
+            <!-- Logo -->
+            <div class="flex items-center gap-[11px]">
+                <div class="w-[34px] h-[34px] bg-accent rounded-lg grid place-items-center text-[17px] shrink-0">👁
+                </div>
+                <h1 class="text-[17px] sm:text-[19px] font-extrabold tracking-tight">
+                    Face<span class="text-accent">ID</span>
+                </h1>
             </div>
-            <div id="status-bar">
+
+            <!-- Status pills -->
+            <div id="status-bar" class="flex gap-[6px] flex-wrap w-full sm:w-auto sm:gap-[7px]">
                 <div class="pill" id="p-server"><span class="dot"></span>Connecting…</div>
                 <div class="pill" id="p-cvl"><span class="dot"></span>CVLFace</div>
                 <div class="pill" id="p-live"><span class="dot"></span>Liveness</div>
                 <div class="pill" id="p-tier"><span class="dot"></span>DB</div>
-                <div class="pill" id="p-geo" onclick="window._tapGeoPill && window._tapGeoPill()" style="cursor:pointer"
-                    title="Tap to enable GPS"><span class="dot"></span>📍 GPS off</div>
+                <div class="pill cursor-pointer" id="p-geo" onclick="window._tapGeoPill && window._tapGeoPill()"
+                    title="Tap to enable GPS">
+                    <span class="dot"></span>📍 GPS off
+                </div>
             </div>
         </header>
 
         <!-- GPS Permission Banner -->
         <div id="gps-banner" class="gps-banner hidden"></div>
 
-        <div class="main">
+        <!-- Main two-column layout -->
+        <!-- Desktop: side by side | Tablet+Mobile: stacked -->
+        <div class="main mt-[18px] sm:mt-[20px]">
 
-            <!-- Camera -->
-            <div class="camera-column">
+            <!-- ── Camera column ── -->
+            <div class="camera-column min-w-0">
+
+                <!-- Camera viewport -->
                 <div class="camera-wrap">
                     <div class="cam-aspect-spacer"></div>
                     <video id="vid" autoplay playsinline muted></video>
                     <canvas id="cvs"></canvas>
                     <div class="flash" id="flash"></div>
+
+                    <!-- LIVE badge -->
                     <div class="cam-label">LIVE</div>
+
+                    <!-- Multi-face warning -->
                     <div id="cam-warning" class="cam-warning hidden">Too many faces detected</div>
+
+                    <!-- Offline state -->
                     <div class="cam-offline" id="cam-offline">
                         <span class="icon">📷</span>
                         <span>Camera not started</span>
                     </div>
+
+                    <!-- Switch camera -->
                     <button id="btn-switch-cam" class="cam-switch-btn hidden" onclick="switchCamera()"
                         title="Switch camera" aria-label="Switch camera">
                         <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none"
@@ -58,6 +114,9 @@
                         </svg>
                     </button>
                 </div>
+
+                <!-- Action buttons -->
+                <!-- Mobile: grid (snap full-width top, cam+reg below) | Desktop: flex row -->
                 <div class="btn-row">
                     <button class="btn btn-secondary" id="btn-cam" onclick="toggleCamera()">Start Camera</button>
                     <button class="btn btn-primary" id="btn-snap" onclick="captureAndMatch()" disabled>📸 Capture &amp;
@@ -65,6 +124,8 @@
                     <button class="btn btn-secondary" id="btn-reg" onclick="captureAndRegister()" disabled>➕
                         Register</button>
                 </div>
+
+                <!-- Liveness challenge bar -->
                 <div id="challenge-box" class="challenge hidden">
                     <div id="challenge-text" class="challenge-text">Active challenge idle</div>
                     <div class="challenge-bar">
@@ -73,9 +134,10 @@
                 </div>
             </div>
 
-            <!-- Results -->
+            <!-- ── Results panel ── -->
             <div class="panel">
                 <div class="panel-title">Match Results</div>
+
                 <div class="opt-row">
                     <span>Passive liveness only</span>
                     <label class="toggle">
@@ -84,6 +146,7 @@
                         <div class="toggle-thumb"></div>
                     </label>
                 </div>
+
                 <div class="opt-row">
                     <span>Auto-update templates</span>
                     <label class="toggle">
@@ -92,11 +155,14 @@
                         <div class="toggle-thumb"></div>
                     </label>
                 </div>
+
                 <div class="opt-row reg-row">
                     <span>Register name</span>
                     <input id="reg-name" class="reg-input" type="text" placeholder="Enter name" />
                 </div>
+
                 <div class="divider"></div>
+
                 <div id="results">
                     <div class="empty">
                         <span class="icon">🔍</span>
@@ -105,9 +171,10 @@
                 </div>
             </div>
 
-        </div>
-    </div>
+        </div><!-- /main -->
+    </div><!-- /shell -->
 
+    <!-- Toast -->
     <div id="toast"></div>
 
     <script type="module" src="./styles/js/main.js"></script>

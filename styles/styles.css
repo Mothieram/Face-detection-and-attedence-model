@@ -1,3 +1,11 @@
+/* ============================================================
+   styles.css — FaceID attendance frontend
+   Strategy: Tailwind CDN handles color tokens + font config.
+   This file owns: layout, responsive breakpoints, animations,
+   JS-toggled state classes, and dynamic components built by JS.
+   ============================================================ */
+
+/* ── Reset & base ─────────────────────────────────────────── */
 *,
 *::before,
 *::after {
@@ -29,14 +37,7 @@ body {
     touch-action: manipulation;
 }
 
-body {
-    background: var(--bg);
-    color: var(--text);
-    font-family: var(--font);
-    font-size: 14px;
-    line-height: 1.5;
-}
-
+/* Subtle grid pattern */
 body::before {
     content: '';
     position: fixed;
@@ -49,14 +50,16 @@ body::before {
     pointer-events: none;
 }
 
+/* ── Shell ────────────────────────────────────────────────── */
 .shell {
     position: relative;
     z-index: 1;
     max-width: 1100px;
     margin: 0 auto;
-    padding: 0 24px 48px;
+    padding: 0 18px 48px;
 }
 
+/* ── Header ───────────────────────────────────────────────── */
 header {
     display: flex;
     align-items: center;
@@ -94,6 +97,7 @@ header {
     color: var(--accent);
 }
 
+/* ── Status pills ─────────────────────────────────────────── */
 #status-bar {
     display: flex;
     gap: 7px;
@@ -112,6 +116,7 @@ header {
     font-size: 11px;
     color: var(--muted);
     white-space: nowrap;
+    transition: opacity .15s, filter .15s;
 }
 
 .pill .dot {
@@ -122,6 +127,7 @@ header {
     flex-shrink: 0;
 }
 
+/* JS state classes set by status.js */
 .pill.ok {
     border-color: var(--accent);
     color: var(--accent);
@@ -141,9 +147,9 @@ header {
     background: var(--warn);
 }
 
+/* ── Main grid layout ─────────────────────────────────────── */
 .main {
     display: grid;
-    /* Panel: min 0 so it never forces overflow on narrow screens */
     grid-template-columns: minmax(0, 1fr) minmax(0, 380px);
     gap: 24px;
     margin-top: 28px;
@@ -154,12 +160,7 @@ header {
     min-width: 0;
 }
 
-@media (max-width: 820px) {
-    .main {
-        grid-template-columns: 1fr;
-    }
-}
-
+/* ── Camera wrap ──────────────────────────────────────────── */
 .camera-wrap {
     position: relative;
     background: var(--card);
@@ -167,19 +168,25 @@ header {
     border-radius: var(--r);
     overflow: hidden;
     aspect-ratio: 4/3;
+    min-height: 200px;
+}
+
+.cam-aspect-spacer {
+    width: 100%;
+    aspect-ratio: 4/3;
+    pointer-events: none;
 }
 
 .camera-wrap video,
 .camera-wrap canvas {
+    position: absolute;
+    inset: 0;
     width: 100%;
     height: 100%;
     object-fit: cover;
     display: block;
-    position: absolute;
-    inset: 0;
 }
 
-/* Video below canvas, canvas transparent background so video shows through */
 .camera-wrap video {
     z-index: 1;
 }
@@ -190,18 +197,7 @@ header {
     background: transparent !important;
 }
 
-/* Wrap needs explicit height so absolute children have a reference */
-.camera-wrap {
-    position: relative;
-    background: var(--card);
-    border: 1px solid var(--border);
-    border-radius: var(--r);
-    overflow: hidden;
-    aspect-ratio: 4/3;
-    /* Prevent height collapse when all children are position:absolute */
-    min-height: 200px;
-}
-
+/* LIVE badge */
 .cam-label {
     position: absolute;
     z-index: 3;
@@ -218,6 +214,7 @@ header {
     pointer-events: none;
 }
 
+/* Multi-face warning */
 .cam-warning {
     position: absolute;
     z-index: 3;
@@ -239,6 +236,7 @@ header {
     display: none;
 }
 
+/* Offline placeholder */
 .cam-offline {
     position: absolute;
     inset: 0;
@@ -258,13 +256,22 @@ header {
     opacity: 0.35;
 }
 
-.cam-aspect-spacer {
-    width: 100%;
-    aspect-ratio: 4/3;
+/* Flash */
+.flash {
+    position: absolute;
+    inset: 0;
+    z-index: 4;
+    background: white;
+    opacity: 0;
     pointer-events: none;
+    transition: opacity .05s;
 }
 
-/* ── Switch camera overlay button ────────────────────── */
+.flash.go {
+    opacity: 0.5;
+}
+
+/* Switch camera button */
 .cam-switch-btn {
     position: absolute;
     bottom: 12px;
@@ -281,7 +288,7 @@ header {
     z-index: 10;
     backdrop-filter: blur(6px);
     -webkit-backdrop-filter: blur(6px);
-    transition: background 0.15s, transform 0.15s, border-color 0.15s;
+    transition: background .15s, transform .15s, border-color .15s;
     -webkit-tap-highlight-color: transparent;
 }
 
@@ -320,27 +327,63 @@ header {
     }
 }
 
-.flash {
-    position: absolute;
-    inset: 0;
-    background: white;
-    opacity: 0;
-    pointer-events: none;
-    transition: opacity .05s;
-}
-
-.flash.go {
-    opacity: 0.5;
-}
-
+/* ── Action buttons ───────────────────────────────────────── */
 .btn-row {
     display: flex;
     gap: 10px;
     margin-top: 12px;
     align-items: stretch;
-    /* force equal height across all buttons */
 }
 
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 7px;
+    padding: 10px 18px;
+    border-radius: 8px;
+    border: none;
+    font-family: var(--font);
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    transition: all .15s;
+    letter-spacing: 0.2px;
+    white-space: nowrap;
+    flex: 1;
+    min-height: 44px;
+    -webkit-tap-highlight-color: transparent;
+    user-select: none;
+}
+
+.btn:disabled {
+    opacity: 0.38;
+    cursor: not-allowed;
+}
+
+.btn-primary {
+    background: var(--accent);
+    color: #0a0a0f;
+    box-shadow: 0 0 14px rgba(74, 240, 160, 0.2);
+}
+
+.btn-primary:hover:not(:disabled) {
+    background: #5fffa8;
+    box-shadow: 0 0 22px rgba(74, 240, 160, 0.35);
+}
+
+.btn-secondary {
+    background: var(--surface);
+    color: var(--text);
+    border: 1px solid var(--border);
+}
+
+.btn-secondary:hover:not(:disabled) {
+    border-color: var(--accent);
+    color: var(--accent);
+}
+
+/* ── Liveness challenge ───────────────────────────────────── */
 .challenge {
     margin-top: 10px;
     background: var(--surface);
@@ -379,55 +422,7 @@ header {
     background: linear-gradient(90deg, #ff9f43, #f7c948);
 }
 
-.btn {
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    gap: 7px;
-    padding: 10px 18px;
-    border-radius: 8px;
-    border: none;
-    font-family: var(--font);
-    font-size: 13px;
-    font-weight: 700;
-    cursor: pointer;
-    transition: all .15s;
-    letter-spacing: 0.2px;
-    white-space: nowrap;
-    flex: 1;
-    min-height: 44px;
-    /* equal height for all buttons regardless of emoji/content */
-    -webkit-tap-highlight-color: transparent;
-    user-select: none;
-}
-
-.btn:disabled {
-    opacity: 0.38;
-    cursor: not-allowed;
-}
-
-.btn-primary {
-    background: var(--accent);
-    color: #0a0a0f;
-    box-shadow: 0 0 14px rgba(74, 240, 160, 0.2);
-}
-
-.btn-primary:hover:not(:disabled) {
-    background: #5fffa8;
-    box-shadow: 0 0 22px rgba(74, 240, 160, 0.35);
-}
-
-.btn-secondary {
-    background: var(--surface);
-    color: var(--text);
-    border: 1px solid var(--border);
-}
-
-.btn-secondary:hover:not(:disabled) {
-    border-color: var(--accent);
-    color: var(--accent);
-}
-
+/* ── Results panel ────────────────────────────────────────── */
 .panel {
     background: var(--card);
     border: 1px solid var(--border);
@@ -468,8 +463,15 @@ header {
     font-family: var(--mono);
     font-size: 14px;
     min-width: 160px;
+    outline: none;
+    transition: border-color .15s;
 }
 
+.reg-input:focus {
+    border-color: var(--accent);
+}
+
+/* ── Toggle switch ────────────────────────────────────────── */
 .toggle {
     position: relative;
     width: 36px;
@@ -481,6 +483,7 @@ header {
     opacity: 0;
     width: 0;
     height: 0;
+    position: absolute;
 }
 
 .toggle-track {
@@ -511,11 +514,13 @@ header {
     transform: translateX(16px);
 }
 
+/* ── Divider ──────────────────────────────────────────────── */
 .divider {
     height: 1px;
     background: var(--border);
 }
 
+/* ── Results list ─────────────────────────────────────────── */
 #results {
     display: flex;
     flex-direction: column;
@@ -523,21 +528,7 @@ header {
     overflow-y: auto;
     -webkit-overflow-scrolling: touch;
     overscroll-behavior: contain;
-    /* Contain layout so DOM changes inside never reflow the page */
     contain: layout style;
-}
-
-@media (max-width: 820px) {
-    #results {
-        max-height: 300px;
-    }
-
-    /* Panel fixed height — stops it growing when geo card appears,
-       which is what causes Chrome mobile to zoom/scroll */
-    .panel {
-        /* header + opts + divider + results = fixed total */
-        overflow: hidden;
-    }
 }
 
 .empty {
@@ -554,6 +545,7 @@ header {
     margin-bottom: 10px;
 }
 
+/* ── Result cards (built by result.js) ───────────────────── */
 .card {
     display: flex;
     align-items: center;
@@ -652,6 +644,7 @@ header {
     border-color: var(--warn);
 }
 
+/* ── Spinner ──────────────────────────────────────────────── */
 .spinner {
     width: 16px;
     height: 16px;
@@ -669,6 +662,7 @@ header {
     }
 }
 
+/* ── Toast ────────────────────────────────────────────────── */
 #toast {
     position: fixed;
     bottom: 28px;
@@ -699,7 +693,7 @@ header {
     color: var(--warn);
 }
 
-/* ── Geo Card v2 (thumbnail style) ───────────────────── */
+/* ── Geo card (built by geocard.js) ──────────────────────── */
 .geo-card-v2 {
     display: flex;
     align-items: stretch;
@@ -710,10 +704,9 @@ header {
     background: #1c1c28;
     border: 1px solid var(--border);
     text-decoration: none;
+    min-height: 90px;
     animation: pop .18s ease;
     transition: border-color .15s, box-shadow .15s;
-    min-height: 90px;
-    /* prevents card height jump when geo info loads */
 }
 
 .geo-card-v2:hover {
@@ -725,13 +718,11 @@ header {
     position: relative;
     width: 100px;
     height: 90px;
-    /* fixed height — prevents reflow when map tiles load */
     min-height: 90px;
     flex-shrink: 0;
     background: #111118;
     overflow: hidden;
     contain: strict;
-    /* tells browser this box never affects outside layout */
 }
 
 .geo-thumb {
@@ -780,7 +771,6 @@ header {
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
-    letter-spacing: 0.1px;
 }
 
 .geo-info-line2 {
@@ -810,37 +800,26 @@ header {
     margin-top: 1px;
 }
 
-/* ── GPS Permission Banner ────────────────────────────── */
-/* ── GPS Permission Banner ─────────────────────────────────────────────── */
+/* ── GPS Permission Banner (built by geo.js) ─────────────── */
 .gps-banner {
     display: flex;
     flex-direction: column;
     gap: 10px;
     margin-top: 14px;
-    padding: 14px 14px 14px 14px;
+    padding: 14px;
     border-radius: var(--r);
     background: rgba(255, 107, 107, 0.07);
     border: 1px solid rgba(255, 107, 107, 0.4);
     animation: pop .2s ease;
-    /* Prevent banner from ever overflowing its container */
     box-sizing: border-box;
     width: 100%;
     overflow: hidden;
-}
-
-/* Desktop: make banner width match the left camera column width */
-@media (min-width: 821px) {
-    .gps-banner {
-        width: calc(100% - 380px - 18px);
-        max-width: calc(100% - 380px - 18px);
-    }
 }
 
 .gps-banner.hidden {
     display: none;
 }
 
-/* ── Top row: icon + body + dismiss ── */
 .gps-banner-top {
     display: flex;
     align-items: flex-start;
@@ -859,19 +838,16 @@ header {
 .gps-banner-body {
     flex: 1;
     min-width: 0;
-    /* Prevent text from ever escaping its column */
     overflow-wrap: break-word;
     word-break: break-word;
 }
 
-/* Plain message (timeout / unsupported) */
 .gps-banner-text {
     font-size: 13px;
     line-height: 1.55;
     color: #ffcaca;
 }
 
-/* ── Step-by-step guide ── */
 .gps-banner-guide {
     display: flex;
     flex-direction: column;
@@ -881,9 +857,6 @@ header {
 .gps-banner-heading {
     font-size: 11px;
     font-weight: 600;
-    /* No uppercase — it caused the long heading to wrap badly on mobile */
-    text-transform: none;
-    letter-spacing: 0;
     color: rgba(255, 160, 160, 0.9);
     margin-bottom: 2px;
 }
@@ -899,16 +872,13 @@ header {
 
 .gps-steps li {
     display: flex;
-    /* flex-start keeps the number badge pinned to the top of multi-line text */
     align-items: flex-start;
     gap: 8px;
-    /* font-size set here — not on child spans — so strong inherits cleanly */
     font-size: 13px;
     line-height: 1.5;
     color: rgba(255, 200, 200, 0.8);
 }
 
-/* The text portion of each step — wraps naturally without breaking strong tags */
 .gps-steps li>span.gps-step-text {
     flex: 1;
     min-width: 0;
@@ -918,11 +888,8 @@ header {
 .gps-steps li strong {
     color: #ffe4e4;
     font-weight: 600;
-    /* Keep bold phrases on same line as surrounding text */
-    white-space: normal;
 }
 
-/* Numbered circle badge */
 .gps-step-num {
     display: inline-flex;
     align-items: center;
@@ -939,13 +906,10 @@ header {
     flex-shrink: 0;
     font-family: var(--mono);
     line-height: 1;
-    /* Top-align with first line of text */
     margin-top: 2px;
 }
 
-/* ── Dismiss (✕) button — stays small on all screens ── */
 .gps-banner-dismiss {
-    /* Hard fixed size — never grows as a flex child */
     flex: 0 0 auto;
     width: 22px;
     height: 22px;
@@ -957,7 +921,6 @@ header {
     background: transparent;
     color: rgba(255, 150, 150, 0.4);
     font-size: 12px;
-    line-height: 1;
     cursor: pointer;
     transition: color .15s, background .15s;
     padding: 0;
@@ -970,15 +933,12 @@ header {
     background: rgba(255, 107, 107, 0.15);
 }
 
-/* ── Retry button row ── */
 .gps-banner-actions {
     display: flex;
-    /* Desktop: right-aligned compact button */
     justify-content: flex-end;
 }
 
 .gps-banner-btn {
-    /* Desktop: auto-sized, not full width */
     flex: 0 0 auto;
     padding: 7px 28px;
     border-radius: 7px;
@@ -1004,128 +964,57 @@ header {
     border-color: var(--warn);
 }
 
-/* ── GPS pill clickable state ── */
-#p-geo[style*="pointer"] {
+/* ── GPS pill hover state ─────────────────────────────────── */
+#p-geo {
     transition: opacity .15s, filter .15s;
 }
 
-#p-geo[style*="pointer"]:hover,
-#p-geo[style*="pointer"]:active {
+#p-geo:hover,
+#p-geo:active {
     opacity: 0.78;
     filter: brightness(1.2);
 }
 
-/* ── Responsive — tablet (≤ 820px) ── */
-@media (max-width: 820px) {
+
+/* ════════════════════════════════════════════════════════════
+   RESPONSIVE BREAKPOINTS
+   Matches original CSS exactly:
+     ≤ 820px  — tablet   (single column)
+     ≤ 680px  — mobile   (full adjustments)
+     ≤ 420px  — small mobile (tighter padding)
+   ════════════════════════════════════════════════════════════ */
+
+/* ── Desktop only: GPS banner aligns under camera column ─── */
+@media (min-width: 821px) {
     .gps-banner {
-        padding: 13px 13px;
+        width: calc(100% - 380px - 24px);
+        max-width: calc(100% - 380px - 24px);
     }
 }
 
-/* ── Responsive — mobile (≤ 680px) ── */
-@media (max-width: 680px) {
-    .gps-banner {
-        padding: 12px 12px;
-        gap: 9px;
-    }
-
-    .gps-banner-heading {
-        font-size: 11px;
-    }
-
-    .gps-steps li {
-        font-size: 12.5px;
-        gap: 7px;
-    }
-
-    .gps-step-num {
-        width: 19px;
-        height: 19px;
-        min-width: 19px;
-        font-size: 9.5px;
-    }
-
-    .gps-banner-text {
-        font-size: 12.5px;
-    }
-
-    /* Dismiss: even smaller on mobile — just a tap target, not a visual element */
-    .gps-banner-dismiss {
-        width: 20px;
-        height: 20px;
-        font-size: 11px;
-    }
-
-    /* Retry: full width on mobile for easy tapping */
-    .gps-banner-actions {
-        justify-content: stretch;
-    }
-
-    .gps-banner-btn {
-        flex: 1;
-        padding: 10px 16px;
-        min-height: 44px;
-        font-size: 13px;
-        border-radius: 9px;
-    }
-}
-
-/* ── Responsive — small mobile (≤ 420px) ── */
-@media (max-width: 420px) {
-    .gps-banner {
-        padding: 11px 11px;
-        gap: 8px;
-    }
-
-    .gps-steps {
-        gap: 6px;
-    }
-
-    .gps-steps li {
-        font-size: 12px;
-        gap: 7px;
-    }
-
-    .gps-step-num {
-        width: 18px;
-        height: 18px;
-        min-width: 18px;
-        font-size: 9px;
-        margin-top: 3px;
-    }
-
-    .gps-banner-dismiss {
-        width: 18px;
-        height: 18px;
-        font-size: 10px;
-    }
-
-    .gps-banner-btn {
-        font-size: 12px;
-        min-height: 42px;
-    }
-}
-
-
-.shell {
-    padding: 0 18px 28px;
-}
-
-.main {
-    gap: 18px;
-    margin-top: 20px;
-}
-
-.panel {
-    padding: 16px;
-}
-
+/* ── Tablet ≤ 820px ──────────────────────────────────────── */
 @media (max-width: 820px) {
     .main {
         grid-template-columns: 1fr;
+        gap: 18px;
+        margin-top: 20px;
+    }
+
+    .panel {
+        padding: 16px;
+    }
+
+    #results {
+        max-height: 300px;
+    }
+
+    /* Prevent panel reflow when geo card appears */
+    .panel {
+        overflow: hidden;
     }
 }
 
+/* ── Mobile ≤ 680px ──────────────────────────────────────── */
 @media (max-width: 680px) {
     body {
         font-size: 13px;
@@ -1155,26 +1044,24 @@ header {
         padding: 4px 8px;
     }
 
+    /* Buttons: snap full-width top row, cam+reg below */
     .btn-row {
-        display: grid;
+        display: grid !important;
         grid-template-columns: 1fr 1fr;
         grid-template-rows: auto auto;
         gap: 8px;
     }
 
-    /* Capture & Match — full width, first row */
     .btn-row .btn-primary {
         grid-column: 1 / -1;
         grid-row: 1;
     }
 
-    /* Start Camera — bottom left */
     .btn-row #btn-cam {
         grid-column: 1;
         grid-row: 2;
     }
 
-    /* Register — bottom right */
     .btn-row #btn-reg {
         grid-column: 2;
         grid-row: 2;
@@ -1197,8 +1084,9 @@ header {
         font-size: 12px;
     }
 
+    /* Register name input: stack vertically on mobile */
     .reg-row {
-        display: block;
+        display: block !important;
     }
 
     .reg-row span {
@@ -1207,15 +1095,15 @@ header {
     }
 
     .reg-input {
-        width: 100%;
+        width: 100% !important;
         min-height: 40px;
         font-size: 16px;
     }
 
+    /* Smaller toggle on mobile */
     .toggle {
         width: 40px;
         height: 22px;
-        flex-shrink: 0;
     }
 
     .toggle-thumb {
@@ -1227,6 +1115,7 @@ header {
         transform: translateX(18px);
     }
 
+    /* Smaller result cards */
     .card {
         gap: 10px;
         padding: 11px;
@@ -1247,11 +1136,14 @@ header {
         font-size: 10px;
     }
 
+    /* Smaller geo thumb */
     .geo-thumb-wrap {
         width: 84px;
         min-height: 76px;
+        height: 76px;
     }
 
+    /* Toast full-width at bottom */
     #toast {
         left: 12px;
         right: 12px;
@@ -1259,8 +1151,53 @@ header {
         font-size: 11px;
         padding: 10px 12px;
     }
+
+    /* GPS banner */
+    .gps-banner {
+        padding: 12px;
+        gap: 9px;
+    }
+
+    .gps-banner-heading {
+        font-size: 11px;
+    }
+
+    .gps-steps li {
+        font-size: 12.5px;
+        gap: 7px;
+    }
+
+    .gps-step-num {
+        width: 19px;
+        height: 19px;
+        min-width: 19px;
+        font-size: 9.5px;
+    }
+
+    .gps-banner-text {
+        font-size: 12.5px;
+    }
+
+    .gps-banner-dismiss {
+        width: 20px;
+        height: 20px;
+        font-size: 11px;
+    }
+
+    .gps-banner-actions {
+        justify-content: stretch;
+    }
+
+    .gps-banner-btn {
+        flex: 1;
+        padding: 10px 16px;
+        min-height: 44px;
+        font-size: 13px;
+        border-radius: 9px;
+    }
 }
 
+/* ── Small mobile ≤ 420px ────────────────────────────────── */
 @media (max-width: 420px) {
     .shell {
         padding: 0 10px 18px;
@@ -1278,5 +1215,39 @@ header {
     .pill {
         font-size: 9px;
         padding: 3px 7px;
+    }
+
+    /* GPS banner tightest */
+    .gps-banner {
+        padding: 11px;
+        gap: 8px;
+    }
+
+    .gps-steps {
+        gap: 6px;
+    }
+
+    .gps-steps li {
+        font-size: 12px;
+        gap: 7px;
+    }
+
+    .gps-step-num {
+        width: 18px;
+        height: 18px;
+        min-width: 18px;
+        font-size: 9px;
+        margin-top: 3px;
+    }
+
+    .gps-banner-dismiss {
+        width: 18px;
+        height: 18px;
+        font-size: 10px;
+    }
+
+    .gps-banner-btn {
+        font-size: 12px;
+        min-height: 42px;
     }
 }
