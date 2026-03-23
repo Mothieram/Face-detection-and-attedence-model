@@ -6,7 +6,7 @@
 #   All values here are loaded by config.py at startup.
 #   Change any value here and restart the server — no code edits needed.
 #
-# SECRETS (API keys, GPS coords)
+# SECRETS (API keys, DB credentials)
 #   Do NOT commit this file to git if you fill in real values.
 #   Add application.properties to your .gitignore.
 #   For production, use environment variables instead of this file
@@ -74,8 +74,22 @@ auto_update.max_sim_to_existing = 0.98
 # Database (Qdrant local)
 # ------------------------------------------------------------
 
-qdrant.path = your qdrant storage
+qdrant.path = ./qdrant_storage
 qdrant.collection = faces
+
+
+# ------------------------------------------------------------
+# SQL person registry
+# PostgreSQL is recommended for all deployments.
+# SQLite is supported for local development only.
+# ------------------------------------------------------------
+
+sql.backend = postgres
+# Example PostgreSQL DSN — replace with your actual credentials:
+# sql.database_url = postgresql://user:password@localhost:5432/face_db
+sql.database_url =
+sql.sqlite_path = ./persons.sqlite3
+
 
 # ------------------------------------------------------------
 # Dynamic scaling tiers
@@ -144,13 +158,50 @@ display.landmark_color.mouth_left  = 255, 0, 0
 # Env vars API_AUTH_ENABLED and API_KEYS override these values.
 # ------------------------------------------------------------
 
-api.auth.enabled = true #turn True to implement api authentication  
-# CHANGE THIS — do not keep the default key in production
-api.auth.keys = # example use for the api key protection
+api.auth.enabled = true
+
+# CHANGE THIS — generate with:
+#   python -c "import secrets; print(secrets.token_urlsafe(32))"
+api.auth.keys =
 
 # Read-only keys — match/detect/list/status only, cannot register or delete
 # Leave blank if you don't need a readonly tier
-api.auth.keys_readonly = 
+api.auth.keys_readonly =
+
+
+# ------------------------------------------------------------
+# Attendance cooldown store
+#
+# Controls how long a person is blocked from re-scanning after
+# their first attendance mark.
+#
+# Redis makes the cooldown work across multiple workers or servers.
+# Falls back to in-process dict automatically if Redis is unavailable
+# (single-worker mode — safe for development).
+#
+# To enable Redis on Windows: install Memurai for Redis
+#   https://www.memurai.com/get-memurai
+#   Then: pip install redis>=5.0.0
+#
+# To enable Redis on Linux:
+#   sudo apt install redis-server
+#   pip install redis>=5.0.0
+# ------------------------------------------------------------
+
+# Cooldown window in seconds (default 1800 = 30 minutes)
+# Common values:
+#   1800  = 30 minutes
+#   28800 = 8 hours (full office day)
+#   86400 = 24 hours
+attendance.cooldown_sec = 1800
+
+# Redis connection URL
+# Single server (local Redis):
+attendance.redis_url = redis://localhost:6379/0
+
+# Multi-region (uncomment and replace with your hosted Redis URL):
+# attendance.redis_url = redis://default:password@your-host.redis.cloud:6379/0
+
 
 # ------------------------------------------------------------
 # Geotagging
