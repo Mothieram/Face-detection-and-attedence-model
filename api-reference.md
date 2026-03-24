@@ -1,135 +1,109 @@
-# FaceID Attendance System - API Reference
+# FaceID Attendance API Reference
 
-Developer reference for the Face Recognition Attendance Pipeline REST API (`api.py`).
+This document is written for developers who receive this project and need to quickly build business logic on top of the API.
+
+It covers:
+
+- How to call each endpoint
+- What each endpoint returns
+- How to use responses in real business flows (registration, identity, attendance)
 
 **Base URL:** `http://localhost:8000/v1`  
-**Interactive docs:** `http://localhost:8000/docs`  
+**Swagger UI:** `http://localhost:8000/docs`  
 **Auth header:** `X-API-Key: <your_key>`
 
 ---
 
-## Table of Contents
+## 1. Developer Quick Start
 
-- [Authentication](#authentication)
-- [Request format](#request-format)
-- [Response envelope](#response-envelope)
-- [Error codes](#error-codes)
-- [Rate limits](#rate-limits)
-- [Endpoints](#endpoints)
-  - [GET /v1/status](#get-v1status)
-  - [POST /v1/faces/detections](#post-v1facesdetections)
-  - [POST /v1/faces/liveness](#post-v1facesliveness)
-  - [POST /v1/persons](#post-v1persons)
-  - [GET /v1/persons](#get-v1persons)
-  - [GET /v1/persons/{name}](#get-v1personsname)
-  - [DELETE /v1/persons/{name}](#delete-v1personsname)
-  - [POST /v1/faces/matches](#post-v1facesmatches)
-  - [POST /v1/attendance/records](#post-v1attendancerecords)
-  - [GET /v1/db/tier](#get-v1dbtier)
-- [Geo object reference](#geo-object-reference)
+### 1.1 Authentication
 
----
-
-## Authentication
-
-When `api.auth.enabled=true`, all `/v1/*` endpoints require `X-API-Key`.
-
-| Key type     | Access                                                                    |
-| ------------ | ------------------------------------------------------------------------- |
-| **Admin**    | Full access                                                               |
-| **Readonly** | `status`, `detect`, `liveness`, `list/get persons`, `match`, `attendance` |
+When `api.auth.enabled=true`, all `/v1/*` routes require an API key.
 
 ```http
 X-API-Key: your_key_here
 ```
 
-Configure in `application.properties`:
+Key types:
 
-```properties
-api.auth.keys=YOUR_ADMIN_KEY
-api.auth.keys_readonly=YOUR_READONLY_KEY
-```
+| Key type | Access                                                                      |
+| -------- | --------------------------------------------------------------------------- |
+| Admin    | Full access                                                                 |
+| Readonly | `status`, `detections`, `liveness`, `persons` read, `matches`, `attendance` |
 
----
+Admin-only routes:
 
-## Request format
+- `POST /v1/persons`
+- `DELETE /v1/persons/{name}`
 
-Image endpoints use `multipart/form-data`.
+### 1.2 Request content type
+
+All image routes expect `multipart/form-data`.
 
 ```js
 const fd = new FormData();
-fd.append("image", blob, "frame.jpg"); // required
-fd.append("lat", 11.019751); // optional
-fd.append("lon", 76.978664); // optional
+fd.append("image", fileBlob, "frame.jpg");
+fd.append("lat", "11.019751"); // optional
+fd.append("lon", "76.978664"); // optional
 ```
 
-Upload limit: **10 MB** (returns `413 FILE_TOO_LARGE`).
+### 1.3 Common error shape
 
----
-
-## Response envelope
-
-Errors use:
+Most errors follow this envelope:
 
 ```json
 {
   "error": "ERROR_CODE",
-  "message": "Human readable message",
+  "message": "Human readable explanation",
   "field": "image",
   "code": "ERROR_CODE"
 }
 ```
 
-Some errors include optional extra payload in `detail`.
+Some errors include `detail` with additional context.
 
 ---
 
-## Error codes
+## 2. Business Logic Flows
 
-| Code                       | HTTP | Meaning                          |
-| -------------------------- | ---- | -------------------------------- |
-| `MISSING_API_KEY`          | 401  | No `X-API-Key` header            |
-| `INVALID_API_KEY`          | 403  | Key not recognized               |
-| `INSUFFICIENT_PERMISSIONS` | 403  | Readonly key used on admin route |
-| `GEOFENCE_DENIED`          | 403  | Outside allowed geofence         |
-| `LIVENESS_FAILED`          | 403  | Liveness failed                  |
-| `FILE_TOO_LARGE`           | 413  | Payload exceeds 10 MB            |
-| `RATE_LIMITED`             | 429  | Rate limit exceeded              |
-| `INVALID_IMAGE`            | 400  | Cannot decode image              |
-| `NO_FACE_DETECTED`         | 422  | No face detected                 |
-| `FACE_QUALITY_FAILED`      | 422  | All faces failed quality checks  |
-| `PERSON_ALREADY_EXISTS`    | 409  | Name already registered          |
-| `PERSON_NOT_FOUND`         | 404  | Person not found                 |
-| `INVALID_NAME`             | 422  | Name contains invalid characters |
-| `VALIDATION_ERROR`         | 422  | Request validation failed        |
-| `DATABASE_ERROR`           | 500  | SQL store operation failed       |
-| `EMBEDDING_SAVE_FAILED`    | 500  | Vector DB save failed            |
-| `INTERNAL_ERROR`           | 500  | Unhandled server error           |
+### 2.1 Registration flow (new employee onboarding)
 
----
+1. `GET /v1/persons/{name}` to check if already exists.
+2. If 404, call `POST /v1/persons` with image + name.
+3. On success (`201`), store `name`, `face_id`, and optionally `geo` metadata.
+4. On `LIVENESS_FAILED`, ask user to retake image.
 
-## Rate limits
+### 2.2 Identification flow (no attendance marking)
 
-| Endpoint                                                | Limit   |
-| ------------------------------------------------------- | ------- |
-| `POST /v1/persons`, `DELETE /v1/persons/{name}`         | 10/min  |
-| `POST /v1/faces/liveness`                               | 20/min  |
-| `POST /v1/faces/matches`, `POST /v1/attendance/records` | 30/min  |
-| `GET /v1/status`, `GET /v1/persons/{name}`              | 60/min  |
-| `POST /v1/faces/detections`                             | 120/min |
-| Global default                                          | 200/min |
+1. Call `POST /v1/faces/matches`.
+2. Loop over `results`.
+3. Use:
+
+- `matched: true` for known identities
+- `name` for UI labels
+- `score` for confidence filtering
+
+### 2.3 Attendance flow
+
+1. Call `POST /v1/attendance/records`.
+2. Use:
+
+- `present` for final attendance list
+- `detail` for per-face audit
+- `already_logged` to avoid duplicate marking in your ERP/HRMS
 
 ---
 
-## Endpoints
+## 3. Endpoint Reference
 
-### GET /v1/status
+## GET /v1/status
 
-Health check and runtime status.
+Health + model readiness + matching thresholds.
 
-**Auth:** Any valid key
+**Auth:** Any valid key  
+**Rate limit:** 60/min
 
-**Response: 200**
+### Response `200`
 
 ```json
 {
@@ -153,22 +127,24 @@ Health check and runtime status.
 }
 ```
 
+Use this endpoint at app startup to decide if capture should be enabled.
+
 ---
 
-### POST /v1/faces/detections
+## POST /v1/faces/detections
 
-Detect faces and return bbox, landmarks, quality.
+Detect all faces and quality stats. No matching, no attendance marking.
 
 **Auth:** Any valid key  
 **Rate limit:** 120/min
 
-**Request fields**
+### Request fields
 
-| Field   | Type | Required | Description           |
-| ------- | ---- | -------- | --------------------- |
-| `image` | file | Yes      | JPEG or PNG (<=10 MB) |
+| Field   | Type | Required | Description          |
+| ------- | ---- | -------- | -------------------- |
+| `image` | file | Yes      | JPEG or PNG (<=10MB) |
 
-**Response: 200**
+### Response `200`
 
 ```json
 {
@@ -177,7 +153,13 @@ Detect faces and return bbox, landmarks, quality.
       "face_id": "face_1",
       "score": 0.9923,
       "bbox": [120, 45, 310, 290],
-      "landmarks": {},
+      "landmarks": {
+        "right_eye": [158.3, 142.1],
+        "left_eye": [252.7, 139.8],
+        "nose": [205.2, 189.4],
+        "mouth_right": [168.9, 234.6],
+        "mouth_left": [243.1, 232.3]
+      },
       "quality": {
         "passed": true,
         "reason": "OK",
@@ -191,24 +173,28 @@ Detect faces and return bbox, landmarks, quality.
 }
 ```
 
+Typical UI logic:
+
+- Enable capture only when exactly one face has `quality.passed=true`.
+
 ---
 
-### POST /v1/faces/liveness
+## POST /v1/faces/liveness
 
-Run liveness on the largest detected face.
+Runs liveness on the largest detected face.
 
 **Auth:** Any valid key  
 **Rate limit:** 20/min
 
-**Request fields**
+### Request fields
 
-| Field          | Type | Required | Default |
-| -------------- | ---- | -------- | ------- |
-| `image`        | file | Yes      | -       |
-| `passive_only` | bool | No       | `true`  |
-| `camera_index` | int  | No       | `0`     |
+| Field          | Type | Required | Default | Description                       |
+| -------------- | ---- | -------- | ------- | --------------------------------- |
+| `image`        | file | Yes      | -       | JPEG/PNG image                    |
+| `passive_only` | bool | No       | `true`  | Skip active challenge             |
+| `camera_index` | int  | No       | `0`     | Camera index for active challenge |
 
-**Response: 200**
+### Response `200`
 
 ```json
 {
@@ -225,19 +211,21 @@ Run liveness on the largest detected face.
 }
 ```
 
+Business usage:
+
+- If `passed=false`, block registration/match and ask user to retry.
+
 ---
 
-### POST /v1/persons
+## POST /v1/persons
 
-Register a new person.
+Register person with full pipeline (detect -> quality -> liveness -> embed -> save).
 
-Flow: decode -> preprocess -> detect -> quality -> liveness -> embed -> save.
-
-**Auth:** Admin key only  
+**Auth:** Admin only  
 **Rate limit:** 10/min  
-**Success status:** `201 Created`
+**Success status:** `201`
 
-**Request fields**
+### Request fields
 
 | Field           | Type   | Required | Default |
 | --------------- | ------ | -------- | ------- |
@@ -253,12 +241,7 @@ Flow: decode -> preprocess -> detect -> quality -> liveness -> embed -> save.
 | `zone_id`       | string | No       | -       |
 | `skip_geocode`  | bool   | No       | `false` |
 
-Notes:
-
-- Name allows letters, digits, spaces, hyphen, underscore, apostrophe. Max 64.
-- If `face_index` is out of range, server falls back to index `0`.
-
-**Response: 201**
+### Response `201`
 
 ```json
 {
@@ -278,7 +261,7 @@ Notes:
 }
 ```
 
-**Liveness fail response: 403**
+### Liveness failed example `403`
 
 ```json
 {
@@ -294,24 +277,28 @@ Notes:
 }
 ```
 
+Business note:
+
+- Always inspect `embedding_mode`. `fallback` means lower quality embedding.
+
 ---
 
-### GET /v1/persons
+## GET /v1/persons
 
-List registered persons (cursor pagination).
+Cursor-based list of persons.
 
 **Auth:** Any valid key  
 **Rate limit:** 30/min
 
-**Query params**
+### Query params
 
-| Param              | Type   | Default | Notes     |
-| ------------------ | ------ | ------- | --------- |
-| `limit`            | int    | `50`    | max `500` |
-| `after_created_at` | string | -       | cursor    |
-| `after_person_id`  | string | -       | cursor    |
+| Param              | Type   | Default | Notes   |
+| ------------------ | ------ | ------- | ------- |
+| `limit`            | int    | `50`    | max 500 |
+| `after_created_at` | string | -       | cursor  |
+| `after_person_id`  | string | -       | cursor  |
 
-**Response: 200**
+### Response `200`
 
 ```json
 {
@@ -329,16 +316,21 @@ List registered persons (cursor pagination).
 }
 ```
 
+Business usage:
+
+- Admin user-management screens.
+- Export employees in pages.
+
 ---
 
-### GET /v1/persons/{name}
+## GET /v1/persons/{name}
 
-Check if person exists.
+Checks if person exists.
 
 **Auth:** Any valid key  
 **Rate limit:** 60/min
 
-**Response: 200 (found)**
+### Response `200`
 
 ```json
 {
@@ -347,7 +339,7 @@ Check if person exists.
 }
 ```
 
-**Response: 404 (not found)**
+### Response `404`
 
 ```json
 {
@@ -358,26 +350,30 @@ Check if person exists.
 }
 ```
 
+Business usage:
+
+- Pre-check before registration.
+
 ---
 
-### DELETE /v1/persons/{name}
+## DELETE /v1/persons/{name}
 
-Delete person and associated templates.
+Delete person from SQL + vector templates.
 
-**Auth:** Admin key only  
+**Auth:** Admin only  
 **Rate limit:** 10/min  
-**Success status:** `204 No Content`
+**Response on success:** `204 No Content`
 
 ---
 
-### POST /v1/faces/matches
+## POST /v1/faces/matches
 
-Identify faces in an image against DB.
+Identifies all faces from image.
 
 **Auth:** Any valid key  
 **Rate limit:** 30/min
 
-**Request fields**
+### Request fields
 
 | Field           | Type   | Required | Default |
 | --------------- | ------ | -------- | ------- |
@@ -392,7 +388,7 @@ Identify faces in an image against DB.
 | `zone_id`       | string | No       | -       |
 | `skip_geocode`  | bool   | No       | `false` |
 
-**Response: 200**
+### Response `200`
 
 ```json
 {
@@ -417,23 +413,28 @@ Identify faces in an image against DB.
 }
 ```
 
-`name` may be:
+`results[].name` can be:
 
-- matched display name
+- matched user name
 - `"No Match"`
-- `"Rejected"` (failed quality)
-- `"Spoof"` or `"Uncertain"` (failed liveness)
+- `"Rejected"` (quality failed)
+- `"Spoof"` or `"Uncertain"` (liveness failed)
+
+Business usage:
+
+- Visitor recognition
+- Access control pre-check
 
 ---
 
-### POST /v1/attendance/records
+## POST /v1/attendance/records
 
-Match faces and return attendance payload with cooldown dedupe.
+Matching + attendance-ready output with duplicate prevention.
 
 **Auth:** Any valid key  
 **Rate limit:** 30/min
 
-**Request fields**
+### Request fields
 
 | Field           | Type   | Required | Default |
 | --------------- | ------ | -------- | ------- |
@@ -447,7 +448,7 @@ Match faces and return attendance payload with cooldown dedupe.
 | `zone_id`       | string | No       | -       |
 | `skip_geocode`  | bool   | No       | `false` |
 
-**Response: 200**
+### Response `200`
 
 ```json
 {
@@ -466,30 +467,43 @@ Match faces and return attendance payload with cooldown dedupe.
       "score": 0.8731,
       "mode": "cvlface",
       "liveness_score": 0.9102
+    },
+    {
+      "face_id": "face_2",
+      "status": "already_logged",
+      "name": "Anish",
+      "score": 0.8412
     }
   ]
 }
 ```
 
-`detail.status` values:
+`detail[].status` values:
 
 - `matched`
 - `already_logged`
 - `unknown`
 - `spoofed`
 
-Important: `total_faces` here is the number of **quality-passed** faces processed for attendance.
+Important:
+
+- `total_faces` here is quality-passed faces processed in attendance pipeline.
+
+Business usage:
+
+- Directly sync `present` to payroll/HRMS.
+- Store `detail` for compliance/audit.
 
 ---
 
-### GET /v1/db/tier
+## GET /v1/db/tier
 
-Return current HNSW tier info.
+Current vector DB scaling tier metadata.
 
 **Auth:** Any valid key  
 **Rate limit:** 30/min
 
-**Response: 200**
+### Response `200`
 
 ```json
 {
@@ -506,9 +520,46 @@ Return current HNSW tier info.
 
 ---
 
-## Geo object reference
+## 4. Error Codes
 
-Endpoints that accept `lat/lon` return `geo`.
+| Code                       | HTTP | Meaning                     |
+| -------------------------- | ---- | --------------------------- |
+| `MISSING_API_KEY`          | 401  | Missing API key             |
+| `INVALID_API_KEY`          | 403  | Invalid key                 |
+| `INSUFFICIENT_PERMISSIONS` | 403  | Readonly key on admin route |
+| `GEOFENCE_DENIED`          | 403  | Outside allowed geofence    |
+| `LIVENESS_FAILED`          | 403  | Liveness failed             |
+| `FILE_TOO_LARGE`           | 413  | Upload over 10MB            |
+| `RATE_LIMITED`             | 429  | Too many requests           |
+| `INVALID_IMAGE`            | 400  | Invalid image bytes         |
+| `NO_FACE_DETECTED`         | 422  | No face found               |
+| `FACE_QUALITY_FAILED`      | 422  | All faces failed quality    |
+| `PERSON_ALREADY_EXISTS`    | 409  | Name already exists         |
+| `PERSON_NOT_FOUND`         | 404  | Person not found            |
+| `INVALID_NAME`             | 422  | Name not valid              |
+| `VALIDATION_ERROR`         | 422  | Request validation failure  |
+| `DATABASE_ERROR`           | 500  | SQL operation failed        |
+| `EMBEDDING_SAVE_FAILED`    | 500  | Vector save failed          |
+| `INTERNAL_ERROR`           | 500  | Unexpected internal failure |
+
+---
+
+## 5. Rate Limits
+
+| Route                                                                                         | Limit   |
+| --------------------------------------------------------------------------------------------- | ------- |
+| `POST /v1/persons`, `DELETE /v1/persons/{name}`                                               | 10/min  |
+| `POST /v1/faces/liveness`                                                                     | 20/min  |
+| `POST /v1/faces/matches`, `POST /v1/attendance/records`, `GET /v1/persons`, `GET /v1/db/tier` | 30/min  |
+| `GET /v1/status`, `GET /v1/persons/{name}`                                                    | 60/min  |
+| `POST /v1/faces/detections`                                                                   | 120/min |
+| Global default                                                                                | 200/min |
+
+---
+
+## 6. Geo Object Reference
+
+Endpoints that accept geo fields (`lat`, `lon`, `accuracy_m`, `zone_id`, `skip_geocode`) can return:
 
 ```json
 {
@@ -531,3 +582,31 @@ Endpoints that accept `lat/lon` return `geo`.
   "error": null
 }
 ```
+
+---
+
+## 7. Implementation Checklist
+
+Use this when integrating:
+
+1. Call `/v1/status` on startup.
+2. For registration UI:
+
+- pre-check with `/v1/persons/{name}`
+- register with `/v1/persons`
+
+3. For live attendance:
+
+- preview with `/v1/faces/detections`
+- commit scan with `/v1/attendance/records`
+
+4. Persist API response metadata you care about:
+
+- `timestamp`, `present`, `detail`, `geo`, `score`
+
+5. Handle key error codes explicitly in UI:
+
+- `LIVENESS_FAILED`
+- `NO_FACE_DETECTED`
+- `FACE_QUALITY_FAILED`
+- `RATE_LIMITED`
